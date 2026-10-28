@@ -6,9 +6,11 @@
 #   docker compose -f vllm-compose.yml up -d   # or: podman compose ...
 #   curl -sf http://127.0.0.1:8000/health
 #
-# Rootless Podman: change the group_add line to  group_add: [keep-groups]
-# so your host video/render groups reach the container (keep-groups must be
-# the only entry).
+# GPU groups are numeric host GIDs (VIDEO_GID, RENDER_GID in .env). Names would be
+# looked up inside the image, where `render` may not exist or match the host.
+# Find yours with:  stat -c %g /dev/dri/card0 /dev/kfd   (or: getent group video render,
+# third field). Rootless Podman: change the group_add line to  group_add: [keep-groups]
+# (keep-groups must be the only entry).
 
 name: vllm-rdna
 services:
@@ -16,7 +18,7 @@ services:
     image: ${IMAGE:-docker.io/blivioniag/vllm-rdna:v0.31.0-extras}
     container_name: vllm-rdna
     devices: [/dev/kfd, /dev/dri]
-    group_add: [video, render]
+    group_add: ["${VIDEO_GID:-44}", "${RENDER_GID:-992}"]
     ipc: host
     # label=disable lets the container open /dev/kfd under SELinux (Fedora, RHEL).
     security_opt: [seccomp=unconfined, label=disable]

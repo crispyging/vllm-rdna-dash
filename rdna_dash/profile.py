@@ -361,7 +361,8 @@ def collect(data_dir=None):
         "container": container_info(),
         "tools": tools_info(),
         "env": dict(
-            {k: os.environ[k] for k in ("HSA_OVERRIDE_GFX_VERSION", "HIP_VISIBLE_DEVICES") if os.environ.get(k)},
+            {k: os.environ[k] for k in ("HSA_OVERRIDE_GFX_VERSION", "HIP_VISIBLE_DEVICES", "VIDEO_GID", "RENDER_GID")
+             if os.environ.get(k)},
             hf_token_set=bool(os.environ.get("HF_TOKEN"))),
         "servers": probe_servers(),
     }

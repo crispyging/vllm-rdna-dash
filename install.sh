@@ -125,7 +125,7 @@ TOKEN="$(sed -n 's/^RDNA_DASH_TOKEN=//p' .env)"
 
 echo
 say "vllm-rdna-dash is running."
-echo "  Open:   http://${IP:-<this-box>}:$PORT   (from any machine on your network)"
+echo "  Open:   http://${IP:-$(hostname)}:$PORT   (from any machine on your network)"
 if [ -n "$TOKEN" ]; then echo "  Login:  your RDNA_DASH_TOKEN"; else echo "  Login:  none. Anyone on your network can use it; set RDNA_DASH_TOKEN in .env to require one."; fi
 echo "  Files:  $DATA   (settings in $DATA/.env)"
 echo "  Update: run this installer again.   Stop: cd $DATA && $COMPOSE down"

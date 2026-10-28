@@ -1,9 +1,12 @@
 # vllm-rdna-dash: the dashboard as a container, reachable from your whole network.
 #
 #   curl -fsSL https://raw.githubusercontent.com/crispyging/vllm-rdna-dash/main/compose.yml -o compose.yml
+#
+# Not using install.sh (Arcane, Portainer, Dockge...)? Set VIDEO_GID and RENDER_GID to the
+# plain host numbers from `getent group video render` (third field). See the README.
 #   docker compose up -d                 # or: podman compose up -d
 #
-# Then open http://<this-box>:7860 from any machine on your network.
+# Then open http://your-gpu-box:7860 (its name or IP) from any machine on your network.
 #
 # There is no login by default, and the dashboard starts containers through the
 # Docker socket, so anyone on your network can do that. Set RDNA_DASH_TOKEN to
@@ -15,7 +18,7 @@ services:
     image: ghcr.io/crispyging/vllm-rdna-dash:latest
     container_name: vllm-rdna-dash
     restart: unless-stopped
-    # Host networking: the dashboard is on <this-box>:7860 and reaches the model server on localhost.
+    # Host networking: the dashboard listens on the box's port 7860 and reaches the model server on localhost.
     network_mode: host
     # Lets the dashboard read the GPUs and check they are usable.
     devices: [/dev/kfd, /dev/dri]
@@ -35,6 +38,9 @@ services:
       RDNA_DASH_LABEL: ${BOX_NAME:-}         # name shown in the dashboard (default: hostname)
       RDNA_DASH_ENGINE: ${ENGINE:-docker}    # docker | podman | podman-rootless
       HF_TOKEN: ${HF_TOKEN:-}                # only for gated models
+      # Same numbers as group_add above; used for the vLLM container the dashboard starts.
+      VIDEO_GID: ${VIDEO_GID:-44}
+      RENDER_GID: ${RENDER_GID:-992}
     volumes:
       - ${DOCKER_SOCK:-/var/run/docker.sock}:/var/run/docker.sock   # Podman: its socket path
       - ${DATA:-/srv/vllm-rdna}:${DATA:-/srv/vllm-rdna}

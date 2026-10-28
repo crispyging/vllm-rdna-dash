@@ -164,8 +164,22 @@ class TuningTest(unittest.TestCase):
         p = plan(prof, {"recipe": "qwen38-27b-awq"})
         self.assertIn('group_add: ["39", "105"]', p["launch"]["compose_yaml"])
         self.assertIn("--group-add 105", " ".join(p["launch"]["run_command"].split()))
-        p = plan(self.base, {"recipe": "qwen38-27b-awq"})  # no readable devices: fall back to names
-        self.assertIn('group_add: ["video", "render"]', p["launch"]["compose_yaml"])
+        # No readable devices: use VIDEO_GID/RENDER_GID from the environment, never names.
+        old = {k: os.environ.get(k) for k in ("VIDEO_GID", "RENDER_GID")}
+        os.environ.update(VIDEO_GID="44", RENDER_GID="992")
+        try:
+            p = plan(self.base, {"recipe": "qwen38-27b-awq"})
+        finally:
+            for k, v in old.items():
+                os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+        self.assertIn('group_add: ["44", "992"]', p["launch"]["compose_yaml"])
+        self.assertNotIn('"render"', p["launch"]["compose_yaml"])
+        # A placeholder pasted into .env is ignored rather than passed to Docker.
+        os.environ["VIDEO_GID"] = "<44>"
+        try:
+            self.assertNotIn("<44>", tuning.gpu_groups({"runtime": {"container": True}}))
+        finally:
+            os.environ.pop("VIDEO_GID")
 
     def test_step_scripts_never_use_sudo(self):
         for prefs in ({}, {"recipe": "qwen38-27b-awq"}, {"path": "venv", "recipe": "qwen38-27b-awq"}):
@@ -204,6 +218,11 @@ class RegistryTest(unittest.TestCase):
 
 
 class DoctorTest(unittest.TestCase):
+    def test_unknown_group_points_at_gid_settings(self):
+        f = logdoctor.diagnose("Error response from daemon: unable to find group render: no matching entries in group file")
+        self.assertEqual(f[0]["title"], "Container group not found")
+        self.assertIn("VIDEO_GID", f[0]["detail"])
+
     def test_finds_known_failures(self):
         log = "x\nERROR AMDSMI_STATUS_NOT_INIT - Device not initialized\ny\nRuntimeError: hipErrorInvalidImage\n"
         titles = [f["title"] for f in logdoctor.diagnose(log)]

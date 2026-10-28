@@ -343,7 +343,10 @@ class App(object):
                 script = "%s - <<'PY'\n%sPY" % (tuning.q(py), topology.BANDWIDTH_BENCH)
             else:
                 eng = self.profile.get("container", {}).get("engine") or "docker"
-                groups = "--group-add keep-groups" if self.profile.get("container", {}).get("rootless") else                     " ".join("--group-add %s" % g for g in tuning.gpu_groups(self.profile))
+                if self.profile.get("container", {}).get("rootless"):
+                    groups = "--group-add keep-groups"
+                else:
+                    groups = " ".join("--group-add %s" % g for g in tuning.gpu_groups(self.profile))
                 script = ("%s run --rm -i --device /dev/kfd --device /dev/dri %s --security-opt seccomp=unconfined "
                           "--security-opt label=disable --ipc host %s python3 - <<'PY'\n%sPY"
                           % (eng, groups, self.registry.get("image", tuning.load_registry().get("image")), topology.BANDWIDTH_BENCH))

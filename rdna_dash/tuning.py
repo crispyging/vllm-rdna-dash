@@ -125,10 +125,28 @@ def check(cid, level, title, detail, fix=None, link=None):
 
 
 def gpu_groups(profile):
-    """Groups a GPU container needs, as host GIDs when we can read them, else names."""
+    """Numeric host GIDs a GPU container needs. Never names: a name like "render" is looked
+    up in the image's /etc/group, where it may not exist or may carry another number.
+
+    Order: owners of /dev/kfd and /dev/dri as seen here, then VIDEO_GID/RENDER_GID from the
+    environment (the dashboard container gets them from .env), then the host's own group
+    database on a host install. Names are the last resort for a box with no GPU devices."""
     gids = profile.get("access", {}).get("device_gids") or {}
     nums = sorted({g for v in gids.values() for g in v if g != 0})
-    return [str(g) for g in nums] if nums else ["video", "render"]
+    if nums:
+        return [str(g) for g in nums]
+    env = [os.environ.get(k, "").strip() for k in ("VIDEO_GID", "RENDER_GID")]
+    env = [v for v in env if v.isdigit()]
+    if env:
+        return sorted(set(env), key=int)
+    if not profile.get("runtime", {}).get("container"):
+        try:
+            import grp
+            return sorted({str(grp.getgrnam(n).gr_gid) for n in ("video", "render")
+                           if n in {g.gr_name for g in grp.getgrall()}}, key=int) or ["video", "render"]
+        except ImportError:
+            pass
+    return ["video", "render"]
 
 
 def setting(key, value, why):
@@ -627,14 +645,14 @@ def container_spec(reg, paths, r, used, tp, port, host, served, max_len, p2p, hs
     cmd += ccfg.get("args", [])
     if max_len:
         cmd += ["--max-model-len", str(max_len)]
-    groups = groups or ["video", "render"]
+    groups = groups or gpu_groups({})
     publish = ("%d:8000" % port) if host == "0.0.0.0" else ("127.0.0.1:%d:8000" % port)
     return {"image": reg["image"], "env": env, "volumes": vols, "command": cmd, "publish": publish, "groups": groups}
 
 
 def compose_yaml(spec, rootless_podman):
     """compose.yml that runs under docker compose, podman compose and podman-compose."""
-    groups = '["keep-groups"]' if rootless_podman else "[%s]" % ", ".join(json.dumps(g) for g in spec.get("groups") or ["video", "render"])
+    groups = '["keep-groups"]' if rootless_podman else "[%s]" % ", ".join(json.dumps(g) for g in spec["groups"])
 
     def s(v):
         return json.dumps(str(v))
@@ -668,7 +686,7 @@ def _run_argv(engine, spec, rootless_podman):
     if rootless_podman:
         args += ["--group-add", "keep-groups"]
     else:
-        for g in spec.get("groups") or ["video", "render"]:
+        for g in spec["groups"]:
             args += ["--group-add", g]
     args += ["--security-opt", "seccomp=unconfined", "--security-opt", "label=disable", "--ipc", "host",
              "-p", spec["publish"]]

@@ -16,7 +16,7 @@ On the GPU box (Linux with Docker or Podman), one line:
 curl -fsSL https://raw.githubusercontent.com/crispyging/vllm-rdna-dash/main/install.sh | sh
 ```
 
-It starts the dashboard as a container and prints its address. Open `http://<your-gpu-box>:7860` from any computer on your network. There's no login to set up. Run the same line again to update.
+It starts the dashboard as a container and prints its address. Open `http://your-gpu-box:7860` (your box's name or IP) from any computer on your network. There's no login to set up. Run the same line again to update.
 
 Under the hood it:
 - finds Docker or Podman (rootless too)
@@ -25,6 +25,35 @@ Under the hood it:
 - runs [`compose.yml`](compose.yml)
 
 Prefer to do it by hand? Download `compose.yml`, set `VIDEO_GID` and `RENDER_GID` in a `.env` next to it (`stat -c %g /dev/dri/card0 /dev/kfd`), then `docker compose up -d`.
+
+### Deploying with a git-sync tool (Arcane, Portainer, Dockge)
+
+These tools run the repo's compose file themselves and never run `install.sh`, so nothing writes a `.env` for you. Set these variables in the tool's environment / `.env` settings instead:
+
+| Variable | Needed | What to put |
+|---|---|---|
+| `VIDEO_GID` | yes | Host group ID that owns `/dev/dri`, as a plain number |
+| `RENDER_GID` | yes | Host group ID that owns `/dev/kfd`, as a plain number |
+| `RDNA_DASH_TOKEN` | recommended | A long random string. Empty (the default) means no login |
+| `DATA` | optional | Folder for models, caches and settings. Default `/srv/vllm-rdna` |
+| `PORT` | optional | Dashboard port. Default `7860` |
+
+Find the two group IDs on the GPU box:
+
+```bash
+getent group video render
+```
+
+```text
+video:x:44:
+render:x:992:
+```
+
+The ID is the third field: here `VIDEO_GID=44` and `RENDER_GID=992`. (`stat -c %g /dev/dri/card0 /dev/kfd` prints the owners directly.) Enter the bare numbers: no quotes, no brackets, no spaces. A pasted placeholder such as `<44>` makes Docker fail with `unable to find group <44>`. The IDs must be numbers because Docker looks up group names inside the image, which has no `render` group.
+
+Two more things these tools trip over:
+- The file is named `compose.yml`, not `docker-compose.yml`. Point the tool's compose path setting at `compose.yml`.
+- With `RDNA_DASH_TOKEN` empty, anyone who can reach the port can use the dashboard, and the dashboard can start containers through the Docker socket. Set a token unless the network is yours alone.
 
 **Without containers:** `install-host.sh` installs the tool directly on the host (Python 3.8+ and git), which is also the only way to build the fork in a host venv:
 
@@ -155,7 +184,7 @@ A later file with the same `id` overrides an earlier one. Broken files are liste
 
 - **No login by default.** The container install listens on your network (port 7860), and anyone who can reach that port can use it. The dashboard shows a warning saying so. A host install binds to `127.0.0.1` unless you pass `--host 0.0.0.0`.
 - The dashboard container mounts the Docker socket so it can run the vLLM container. That is root-equivalent on the host, so only run it without a login on a network you trust.
-- **To require a login**, set `RDNA_DASH_TOKEN=<something long>` in `~/vllm-rdna/.env` and rerun the installer. You then sign in once per browser; fleet peers send it as `Authorization: Bearer`.
+- **To require a login**, set `RDNA_DASH_TOKEN` to a long random string in `~/vllm-rdna/.env` and rerun the installer. You then sign in once per browser; fleet peers send it as `Authorization: Bearer`.
 - Either way, websites you visit can't drive it: POSTs need a custom header a cross-site page cannot send, and without a login it only answers to IP addresses and local names (`gpu-box`, `gpu-box.local`, `.lan`), which blocks DNS-rebinding pages. Use another name by listing it in `RDNA_DASH_ALLOWED_HOSTS`.
 - The model server binds to localhost unless you turn on LAN sharing.
 - Install scripts come from the plan, never from the browser, and never use sudo.

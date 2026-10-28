@@ -9,6 +9,12 @@ import re
 WIKI = "https://blivioniag.github.io/gfx1030-wiki/"
 
 RULES = [
+    (r"unable to find group|no matching entries in group file|invalid group|Unable to find group",
+     "Container group not found",
+     "group_add used a name or a placeholder the image does not know. Set VIDEO_GID and RENDER_GID in .env to the "
+     "plain host numbers (stat -c %g /dev/dri/card0 /dev/kfd, or the third field of getent group video render), "
+     "with no quotes or brackets, then recreate the containers. Rerunning install.sh does this for you.",
+     None),
     (r"AMDSMI_STATUS_NOT_INIT|Failed to infer device type|ROCm platform is not available",
      "vLLM cannot see the GPU",
      "The process has no access to /dev/kfd or the render nodes. Containers need both video and render "

@@ -1,0 +1,34 @@
+{
+  "id": "flashnext-exl3",
+  "label": "Qwen3.8 Flash-Next EXL3",
+  "summary": "EXL3 checkpoint (exllamav3 1.4.5+) with its own n-gram table. TP=4, no MTP. Host venv only.",
+  "priority": 25,
+  "verify": true,
+  "layout": "tp",
+  "model": {
+    "repo": "turboderp/Qwen3.8-Flash-Next-exl3",
+    "revision": "3.05bpw_h5_ng5",
+    "dir": "Qwen3.8-Flash-Next-exl3-3.05bpw",
+    "must_contain": "ngram_embedding.safetensors"
+  },
+  "requires": {
+    "gfx": [
+      "gfx1030"
+    ],
+    "cards": [
+      4
+    ],
+    "min_vram_per_card_gb": 28,
+    "min_ram_gb": 48
+  },
+  "prefer": "venv",
+  "venv": {
+    "recipe": "flashnext-exl3",
+    "served_name": "flash-next-exl3",
+    "port": 18094
+  },
+  "sources": [
+    "fork: README quick start",
+    "fork: tools/rdna/recipes/flashnext-exl3.env"
+  ]
+}

@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vllm-rdna-dash"
+version = "0.1.0"
+description = "Guided install, per-box tuning, benchmarks and a live dashboard for vllm-rdna on AMD RDNA2 (gfx1030)."
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = []
+
+[project.scripts]
+rdna-dash = "rdna_dash.__main__:main"
+
+[tool.setuptools]
+packages = ["rdna_dash"]
+include-package-data = true
+
+[tool.setuptools.package-data]
+rdna_dash = ["web/*"]

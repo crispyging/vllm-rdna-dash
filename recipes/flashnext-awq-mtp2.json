@@ -1,0 +1,45 @@
+{
+  "id": "flashnext-awq-mtp2",
+  "label": "Qwen3.8 Flash-Next AWQ, MTP=2",
+  "summary": "Best layout on four 32 GB cards: TP=4 with MTP=2 speculative decoding and the INT4 PLE table.",
+  "priority": 30,
+  "layout": "tp",
+  "model": {
+    "repo": "wtdcode/Qwen3.8-Flash-Next-AWQ-W4A16",
+    "dir": "Qwen3.8-Flash-Next-AWQ-W4A16"
+  },
+  "ple": {
+    "repo": "primitive-ai/Qwen3.8-Flash-Next-PLE-quant",
+    "dir": "Qwen3.8-Flash-Next-PLE-quant",
+    "subdir": "ples_int4",
+    "modes": [
+      "int4",
+      "int4-disk",
+      "bf16"
+    ]
+  },
+  "requires": {
+    "gfx": [
+      "gfx1030"
+    ],
+    "cards": [
+      4
+    ],
+    "min_vram_per_card_gb": 28,
+    "min_ram_gb": 32
+  },
+  "prefer": "venv",
+  "container": {
+    "served_name": "flash-next",
+    "mount_model": true
+  },
+  "venv": {
+    "recipe": "flashnext-mtp2",
+    "served_name": "flash-next",
+    "port": 18096
+  },
+  "sources": [
+    "wiki: vllm/onboarding.md",
+    "fork: tools/rdna/recipes/flashnext-mtp2.env"
+  ]
+}

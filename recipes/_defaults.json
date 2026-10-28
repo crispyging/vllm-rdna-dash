@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "image": "docker.io/blivioniag/vllm-rdna:v0.31.0-extras",
+  "fork": {
+    "url": "https://github.com/opengfx1030/vllm-rdna.git",
+    "branch": "rdna_extras"
+  }
+}

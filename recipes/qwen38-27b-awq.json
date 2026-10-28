@@ -1,0 +1,47 @@
+{
+  "id": "qwen38-27b-awq",
+  "label": "Qwen3.8-27B AWQ INT4",
+  "summary": "Day-to-day dense model. Fits one 32 GB card or two 16 GB cards and uses the RDNA2 W4A16 kernels.",
+  "priority": 10,
+  "layout": "tp",
+  "model": {
+    "repo": "cyankiwi/Qwen3.8-27B-AWQ-INT4",
+    "dir": "Qwen3.8-27B-AWQ-INT4"
+  },
+  "requires": {
+    "gfx": [
+      "gfx1030",
+      "gfx1031",
+      "gfx1032",
+      "gfx1100"
+    ],
+    "cards": [
+      1,
+      2,
+      4
+    ],
+    "min_vram_per_card_gb": 15,
+    "min_total_vram_gb": 28,
+    "min_ram_gb": 16
+  },
+  "prefer": "container",
+  "container": {
+    "served_name": "qwen3.8-27b",
+    "max_len": 8192,
+    "args": [
+      "--language-model-only",
+      "--skip-mm-profiling",
+      "--trust-remote-code"
+    ]
+  },
+  "venv": {
+    "recipe": "27b-awq",
+    "served_name": "q27d",
+    "port": 18210,
+    "recipe_tp": 4
+  },
+  "sources": [
+    "wiki: vllm/onboarding.md (Path A)",
+    "fork: tools/rdna/recipes/27b-awq.env"
+  ]
+}

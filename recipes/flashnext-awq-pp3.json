@@ -1,0 +1,40 @@
+{
+  "id": "flashnext-awq-pp3",
+  "label": "Qwen3.8 Flash-Next AWQ on three cards",
+  "summary": "Pipeline parallel PP=3 for three 32 GB cards. Merged after the Hub bake, so host venv only.",
+  "priority": 20,
+  "layout": "pp",
+  "model": {
+    "repo": "wtdcode/Qwen3.8-Flash-Next-AWQ-W4A16",
+    "dir": "Qwen3.8-Flash-Next-AWQ-W4A16"
+  },
+  "ple": {
+    "repo": "primitive-ai/Qwen3.8-Flash-Next-PLE-quant",
+    "dir": "Qwen3.8-Flash-Next-PLE-quant",
+    "subdir": "ples_int4",
+    "modes": [
+      "int4",
+      "int4-disk",
+      "bf16"
+    ]
+  },
+  "requires": {
+    "gfx": [
+      "gfx1030"
+    ],
+    "cards": [
+      3
+    ],
+    "min_vram_per_card_gb": 28,
+    "min_ram_gb": 32
+  },
+  "prefer": "venv",
+  "venv": {
+    "recipe": "flashnext-pp3",
+    "port": 18096
+  },
+  "sources": [
+    "wiki: vllm/serve-scripts.md",
+    "fork: tools/rdna/recipes/flashnext-pp3.env"
+  ]
+}

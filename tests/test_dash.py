@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -155,8 +156,25 @@ class TuningTest(unittest.TestCase):
         prof["runtime"] = {"container": True}
         p = plan(prof, {"root": "/srv/vllm-rdna", "recipe": "qwen38-27b-awq"})
         step = [s for s in p["steps"] if s["id"] == "model"][0]
-        self.assertIn(os.path.join("/srv/vllm-rdna", "hf-cache") + ":/root/.cache/huggingface", step["script"].replace("'", ""))
-        self.assertNotIn("--local-dir", step["script"])
+        model_dir = p["choice"]["model_dir"]
+        self.assertIn("rdna_dash.download", step["script"])
+        self.assertIn(model_dir, step["script"].replace("'", ""))
+        self.assertIn("--limit-file", step["script"])
+        self.assertIn(model_dir + ":/model", p["launch"]["spec"]["volumes"])
+        self.assertEqual(p["launch"]["spec"]["command"][2], "/model")
+
+    def test_network_sharing_defaults(self):
+        prof = copy.deepcopy(self.base)
+        prof["runtime"] = {"container": True}
+        self.assertEqual(plan(prof, {"recipe": "qwen38-27b-awq"})["choice"]["host"], "0.0.0.0")
+        self.assertEqual(plan(self.base, {"recipe": "qwen38-27b-awq"})["choice"]["host"], "127.0.0.1")
+        self.assertEqual(plan(prof, {"recipe": "qwen38-27b-awq", "lan": False})["choice"]["host"], "127.0.0.1")
+
+    def test_p2p_user_choice_wins(self):
+        self.assertIs(plan(self.base, {"p2p": "off"})["choice"]["p2p"], False)
+        prof = copy.deepcopy(self.base)
+        prof["os"]["virt"] = "kvm"
+        self.assertIs(plan(prof, {"p2p": "on", "p2p_probe": False})["choice"]["p2p"], True)
 
     def test_containers_use_host_gpu_gids(self):
         prof = copy.deepcopy(self.base)
@@ -185,6 +203,79 @@ class TuningTest(unittest.TestCase):
         for prefs in ({}, {"recipe": "qwen38-27b-awq"}, {"path": "venv", "recipe": "qwen38-27b-awq"}):
             for s in plan(self.base, prefs)["steps"]:
                 self.assertNotIn("sudo", s.get("script", ""), s["id"])
+
+
+class DownloadTest(unittest.TestCase):
+    """The downloader against a fake Hugging Face endpoint."""
+
+    @classmethod
+    def setUpClass(cls):
+        import http.server
+        import threading
+        cls.files = {"config.json": b"{}" * 10, "model-1.safetensors": os.urandom(300000), "ples_int4/META.json": b"m" * 50}
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                if self.path.startswith("/api/models/"):
+                    body = json.dumps({"siblings": [{"rfilename": k, "size": len(v)} for k, v in cls.files.items()]}).encode()
+                    self.send_response(200)
+                    self.end_headers()
+                    return self.wfile.write(body)
+                name = self.path.split("/resolve/main/", 1)[1]
+                data = cls.files[name.replace("%2F", "/")]
+                start = 0
+                rng = self.headers.get("Range")
+                if rng:
+                    start = int(rng.split("=")[1].split("-")[0])
+                    self.send_response(206)
+                else:
+                    self.send_response(200)
+                self.send_header("Content-Length", str(len(data) - start))
+                self.end_headers()
+                self.wfile.write(data[start:])
+
+        cls.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=cls.httpd.serve_forever, daemon=True).start()
+        os.environ["HF_ENDPOINT"] = "http://127.0.0.1:%d" % cls.httpd.server_address[1]
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        os.environ.pop("HF_ENDPOINT", None)
+
+    def test_downloads_resumes_and_filters(self):
+        from rdna_dash import download
+        with tempfile.TemporaryDirectory() as d:
+            dest = os.path.join(d, "m")
+            os.makedirs(dest)
+            with open(os.path.join(dest, "model-1.safetensors.part"), "wb") as f:
+                f.write(self.files["model-1.safetensors"][:1000])  # a half-finished earlier run
+            self.assertEqual(download.main(["org/repo", dest]), 0)
+            for k, v in self.files.items():
+                with open(os.path.join(dest, *k.split("/")), "rb") as f:
+                    self.assertEqual(f.read(), v, k)
+            dest2 = os.path.join(d, "ple")
+            download.main(["org/repo", dest2, "--include", "ples_int4/*"])
+            self.assertEqual(os.listdir(dest2), ["ples_int4"])
+
+    def test_limit_slows_and_is_reread(self):
+        from rdna_dash import download
+        with tempfile.TemporaryDirectory() as d:
+            lf = os.path.join(d, "limit")
+            with open(lf, "w") as f:
+                f.write("0.5")
+            lim = download.Limiter(lf)
+            t = time.monotonic()
+            for _ in range(5):
+                lim.take(200000)  # 1 MB at 0.5 MB/s: about 2 s
+            self.assertGreater(time.monotonic() - t, 1.2)
+            with open(lf, "w") as f:
+                f.write("0")
+            lim.checked = 0
+            self.assertEqual(lim.current(), 0.0)
 
 
 class HostGuardTest(unittest.TestCase):

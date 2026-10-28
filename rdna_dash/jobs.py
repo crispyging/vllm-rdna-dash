@@ -4,9 +4,11 @@ Only one job runs at a time. Scripts come from the tuning plan (never from the
 browser), run as the current user, and never use sudo.
 """
 
+import json
 import os
 import signal
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -63,6 +65,10 @@ class Runner(object):
     def _spawn(self, job, env):
         e = dict(os.environ)
         e["PATH"] = os.path.expanduser("~/.local/bin") + os.pathsep + e.get("PATH", "")
+        # Steps call our own modules (the downloader) with this interpreter.
+        pkg_parent = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        e["RDNA_PY"] = sys.executable
+        e["PYTHONPATH"] = pkg_parent + (os.pathsep + e["PYTHONPATH"] if e.get("PYTHONPATH") else "")
         e.update(env or {})
         log = open(job.log_path, "wb")
         header = "$ %s\n\n" % job.script.replace("\n", "\n$ ")
@@ -110,6 +116,10 @@ class DemoRunner(Runner):
     def _fake(self, job):
         lines = ["$ " + l for l in job.script.splitlines()[:6]] + [""]
         lines += {
+            "model": ["Downloading 14 files (61.40 GB) from the model repo"] + [
+                "PROGRESS " + json.dumps({"file": 1 + i // 2, "files": 14, "name": "model-%05d-of-00014.safetensors" % (1 + i // 2),
+                                          "done": int(61.4e9 * (i + 1) / 16), "total": int(61.4e9), "rate": 112e6, "eta": 30 - 2 * i,
+                                          "limit_mbps": 0}) for i in range(16)] + ["Done: 14 files in 9m08s."],
             "build": ["Building editable for vllm (pyproject.toml) ..."] + ["[%d/48] hipcc csrc/rocm/rdna/... .hip" % i for i in range(1, 49, 4)]
                      + ["Successfully installed vllm-0.31.0+rdna"],
             "torch": ["Resolved 24 packages", "Installed torch==2.12.0+rocm7.14.0", "2.12.0+rocm7.14.0 True"],

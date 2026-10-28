@@ -76,6 +76,33 @@ class App(object):
         self.sampler.start()
 
     # ------------------------------------------------------------------ plan
+    def write_download_limit(self):
+        """The running downloader re-reads this file every second."""
+        if self.demo:
+            return  # demo mode never writes outside its temp state
+        path = self.plan["paths"]["download_limit"]
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                f.write(str(float((self.cfg.get("prefs") or {}).get("download_mbps") or 0)))
+        except OSError:
+            pass
+
+    def download_progress(self, job):
+        """Last PROGRESS line of a running download job."""
+        try:
+            with open(job.log_path, "rb") as f:
+                f.seek(0, 2)
+                f.seek(max(0, f.tell() - 8192))
+                tail = f.read().decode("utf-8", "replace")
+        except OSError:
+            return None
+        lines = [l for l in tail.splitlines() if l.startswith("PROGRESS ")]
+        try:
+            return json.loads(lines[-1][9:]) if lines else None
+        except ValueError:
+            return None
+
     def rebuild(self):
         st = store.load_state()
         prefs = dict(self.cfg.get("prefs") or {})
@@ -86,6 +113,7 @@ class App(object):
         if self.demo:
             # Point the plan at the fake server so the dashboard and bench exercise real code paths.
             self.plan["choice"]["port"] = self.fake.port
+        self.write_download_limit()
         return self.plan
 
     def server_url(self):
@@ -120,6 +148,8 @@ class App(object):
                 if self.runner.current and self.runner.current.step == s["id"] and self.runner.current.status == "running":
                     status = "running"
             out[s["id"]] = {"status": status, "job": rec.get("job"), "at": rec.get("at")}
+            if s.get("download") and status == "running" and self.runner.current:
+                out[s["id"]]["progress"] = self.download_progress(self.runner.current)
         return out
 
     def run_step(self, sid):
@@ -629,6 +659,13 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/server/restart":
             a.serve.stop(a.plan)
             return self._send(200, a.serve.start(a.plan))
+        if path == "/api/download/limit":
+            mbps = max(0.0, float(body.get("mbps") or 0))
+            a.cfg.setdefault("prefs", {})["download_mbps"] = mbps
+            store.save_config(a.cfg)
+            a.rebuild()
+            a.write_download_limit()
+            return self._send(200, {"ok": True, "mbps": mbps})
         if path == "/api/attach":
             url = (body.get("url") or "").strip() or None
             if url and not re.match(r"^https?://", url):

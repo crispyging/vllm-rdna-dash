@@ -42,6 +42,19 @@ const GLOSSARY = {
 };
 const term = (text, key) => `<span class="term" tabindex="0" data-tip="${key}">${text}</span>`;
 
+/* ---------- the address other machines use for the model server */
+function publicUrl() {
+  const ss = S.server, ch = S.plan.choice;
+  if (ss.attached) return ss.url;
+  if (ch.host === "0.0.0.0") return `http://${location.hostname}:${ch.port}/v1`;
+  return ss.url;
+}
+function shareNote() {
+  const ch = S.plan.choice;
+  if (S.server.attached || ch.host === "0.0.0.0") return "";
+  return `<span class="muted">Only this machine can reach it.</span><button class="ghost small" data-act="shareNet">Share on my network</button>`;
+}
+
 /* ---------- app state */
 let S = null;          // /api/state
 let T = null;          // /api/telemetry
@@ -53,8 +66,16 @@ const prevNums = {};
 function patch(el, html) {
   if (!el || el._html === html) return;
   const scrolls = $$(".log", el).map((l) => [l.dataset.k, l.scrollTop, l.scrollHeight - l.clientHeight - l.scrollTop < 30]);
+  // Keep what someone is typing: live re-renders must not reset inputs or steal focus.
+  const inputs = $$("input[id]", el).map((i) => [i.id, i.value, document.activeElement === i, i.selectionStart, i.selectionEnd]);
   el.innerHTML = html;
   el._html = html;
+  for (const [id, value, focused, a, b] of inputs) {
+    const i = el.querySelector("#" + CSS.escape(id));
+    if (!i) continue;
+    i.value = value;
+    if (focused) { i.focus(); try { i.setSelectionRange(a, b); } catch { /* number inputs have no selection */ } }
+  }
   for (const [k, top, atEnd] of scrolls) {
     const l = k && el.querySelector(`.log[data-k="${k}"]`);
     if (l) l.scrollTop = atEnd ? l.scrollHeight : top;
@@ -277,7 +298,7 @@ function renderSetup(force) {
   const cur = P.steps.find((s) => !["done", "recommended"].includes(S.steps[s.id].status));
   patch($("#s-steps"), `<ol class="steps">${P.steps.map((s) => stepRow(s, cur && cur.id === s.id)).join("")}</ol>`);
 
-  patch($("#s-plan"), `<div class="kv">${P.settings.map((s) => `<div class="k">${glossKey(s.key)}</div><div class="v">${esc(s.value)}<span class="why">${esc(s.why)}</span></div>`).join("")}</div>
+  patch($("#s-plan"), `<div class="kv">${P.settings.map((s) => `<div class="k">${glossKey(s.key)}</div><div class="v">${esc(s.key === "Endpoint" ? s.value.replace("this-box", location.hostname) : s.value)}<span class="why">${esc(s.why)}</span></div>`).join("")}</div>
     ${P.alternatives.length ? `<p class="eyebrow" style="margin-top:22px">Other good options</p><div class="row">${P.alternatives.map((a) => `<button class="ghost" data-act="alt" data-arg='${esc(JSON.stringify(a.prefs))}' title="${esc(a.why)}">${esc(a.label)}</button>`).join("")}</div>` : ""}
     <details style="margin-top:18px"><summary>Show the exact launch command</summary>${cmdBlock(P.launch.command)}${P.launch.compose_yaml ? `<p class="muted" style="margin:12px 0 0">${term("compose.yml", "compose")} written to ${esc(P.launch.compose_file)}</p>${cmdBlock(P.launch.compose_yaml)}` : ""}</details>
     ${S.registry_errors && S.registry_errors.length ? `<div class="problem"><div class="t">Some recipe files were skipped</div><div class="d">${S.registry_errors.map(esc).join("<br>")}</div></div>` : ""}`);
@@ -326,6 +347,15 @@ function stepRow(s, isCur) {
   let extra = "";
   if (s.kind === "tune") extra += `<div class="tune-list">${s.checks.map(checkRow).join("")}</div>`;
   if (s.kind === "check" && s.blocked_by && s.blocked_by.length) extra = `<p class="muted">Waiting on: ${s.blocked_by.map(esc).join(", ")}. The commands are under “Needs you”.</p>`;
+  if (s.download) {
+    const pr = st.progress;
+    const lim = (S.prefs && S.prefs.download_mbps) || 0;
+    if (pr && pr.total) {
+      const pct = Math.min(100, (100 * pr.done) / pr.total);
+      extra += `<div class="big-progress"><i style="width:${pct}%"></i></div><p class="muted">${fmt(pct, 0)}% · ${fmt(pr.done / 1e9, 1)} of ${fmt(pr.total / 1e9, 1)} GB · ${fmt(pr.rate / 1e6, 0)} MB/s${pr.eta ? " · about " + ago(Date.now() / 1000 - pr.eta) + " left" : ""} · file ${pr.file} of ${pr.files}</p>`;
+    }
+    extra += `<div class="row dl-limit"><label for="dl-limit" class="muted">Max download speed</label><input id="dl-limit" class="in" type="number" min="0" step="1" value="${lim || ""}" placeholder="no limit"><span class="muted">MB/s</span><button class="ghost small" data-act="dlLimit">Apply</button><span class="muted">${running ? "Changes take effect within a second." : "Leave empty for no limit."}</span></div>`;
+  }
   if (ui.openStep === s.id && job) {
     extra += `<div class="log" data-k="${s.id}">${esc(ui.logs[job] || "Loading…")}</div>`;
     if (status === "failed" && ui.problems && ui.problems.length) extra += ui.problems.map(problemRow).join("");
@@ -403,7 +433,8 @@ function renderDash() {
   patch($("#dh-state"), `<div class="row hero-top">${pill(dot, word)}<span class="muted">${esc(layout)}</span><span class="spacer"></span>${btns}</div>`);
   patch($("#dh-word"), ss.state === "up" ? `<span class="key">${word}</span>` : word);
   patch($("#dh-sub"), sub);
-  patch($("#dh-meta"), `<span class="chip mono">${esc(ss.url)}</span><button class="ghost small" data-copy="${esc(ss.url)}">Copy URL</button>`);
+  const pub = publicUrl();
+  patch($("#dh-meta"), `<span class="chip mono">${esc(pub)}</span><button class="ghost small" data-copy="${esc(pub)}">Copy URL</button>${shareNote()}`);
   countTo($('[data-k="kpi-gen"]'), srv.gen_tps, 1);
   patch($("#dh-spark"), spark(tail("gen_tps"), "var(--key)", 44));
   patch($("#dh-attach"), ss.state !== "up" && !ss.attached ? `<details class="attach"><summary>Already running vLLM yourself? Watch that server instead</summary><div class="row" style="margin-top:10px"><input id="attach-url" class="in" placeholder="http://127.0.0.1:8000/v1"><button class="ghost" data-act="attach">Watch it</button></div></details>` : "");
@@ -465,7 +496,7 @@ function renderDash() {
     <div class="stat"><div class="stat-h"><span>CPU</span><b>${fmt(h.cpu)}%</b></div><div class="meter"><i style="width:${h.cpu || 0}%"></i></div></div>
     <div class="stat"><div class="stat-h"><span>RAM${ch.ple ? ` (holds the PLE table ${info("ple")})` : ""}</span><b>${fmt(h.ram_used)} <span class="muted">/ ${fmt(h.ram_total)} GB</span></b></div><div class="meter mem"><i style="width:${ramPct}%"></i></div></div>
     <div class="stat-row big"><span><span class="muted">Requests served</span> <b>${fmt(srv.requests_done)}</b></span><span><span class="muted">Avg request</span> <b>${srv.e2e == null ? "–" : fmt(srv.e2e, 1) + " s"}</b></span></div>`);
-  const base = ss.url.replace(/\/$/, "");
+  const base = publicUrl().replace(/\/$/, "");
   const snip = ui.snip || "curl";
   const code = snip === "curl"
     ? `curl ${base}/chat/completions \\\n  -H 'Content-Type: application/json' \\\n  -d '{"model":"${model}","messages":[{"role":"user","content":"Hello!"}]}'`
@@ -474,6 +505,26 @@ function renderDash() {
     <p class="muted" style="margin:0 0 8px">Any OpenAI-compatible app works: give it this base URL and the model name <b>${esc(model)}</b>. No API key needed.</p>${cmdBlock(code)}`);
 }
 actions.snip = async (k) => { ui.snip = k; renderDash(); };
+actions.shareNet = async () => {
+  await api.post("/api/prefs", { lan: true });
+  await refresh();
+  if (S.server.state === "up" || S.server.state === "starting") {
+    if (confirm("Restart the model server now so other machines can reach it?")) await api.post("/api/server/restart");
+  }
+  toast("The model server is shared on your network"); await refresh();
+};
+actions.p2p = async (mode) => {
+  await api.post("/api/prefs", { p2p: mode });
+  await refresh();
+  toast(mode === "auto" ? "P2P: automatic" : "P2P " + mode + " for vLLM");
+  if (S.server.state === "up" && confirm("Restart the model server now to apply the P2P setting?")) await api.post("/api/server/restart");
+  renderTopo();
+};
+actions.dlLimit = async () => {
+  const v = Number($("#dl-limit").value || 0);
+  await api.post("/api/download/limit", { mbps: v });
+  toast(v ? `Download limit ${v} MB/s` : "No download limit"); await refresh();
+};
 
 /* ======================================================================= CHAT */
 function renderChat() {
@@ -608,12 +659,13 @@ function renderTopo() {
     el.innerHTML = `<h1 class="punch sm${slamOnce("topo")}">Who talks <span class="key">to who.</span></h1>
       <p class="lede">How each GPU connects to the CPU and to the other GPUs: the PCIe switches in between, the link speed, and whether the driver allows direct ${term("P2P", "p2p")} copies. Then measure it.</p>
       <div class="row"><button class="ghost" data-act="topoScan">Rescan</button><button class="btn" data-act="bandwidth" data-arg="torch">Measure GPU-to-GPU bandwidth</button><span id="t-rbt"></span></div>
-      <div id="t-job"></div><div id="t-map"></div><div id="t-pairs"></div><div id="t-bw"></div><div id="t-raw"></div>`;
+      <div id="t-p2p"></div><div id="t-job"></div><div id="t-map"></div><div id="t-pairs"></div><div id="t-bw"></div><div id="t-raw"></div>`;
     el.dataset.built = "1";
   }
   patch($("#t-rbt"), TP.tools && TP.tools.rocm_bandwidth_test ? `<button class="ghost" data-act="bandwidth" data-arg="rbt">Run rocm-bandwidth-test</button>` : `<span class="muted">rocm-bandwidth-test not installed (optional)</span>`);
   const job = ui.topoJob ? ui.logs[ui.topoJob] : null;
   patch($("#t-job"), job != null ? `<div class="sec"><h2>Measuring</h2><div class="log" data-k="topo">${esc(job || "Starting…")}</div></div>` : "");
+  patch($("#t-p2p"), S ? p2pPanel(TP) : "");
   patch($("#t-map"), `<div class="sec"><h2>PCIe map</h2>${topoSvg(TP)}</div>`);
   const viaTxt = { switch: "Shared PCIe switch", "cpu-root-complex": "Through the CPU", "cpu-interconnect": "Across CPU sockets" };
   patch($("#t-pairs"), TP.pairs.length ? `<div class="sec"><h2>Every pair</h2><div class="scroll-x"><table class="t"><thead><tr><th>Pair</th><th>Path</th><th class="num">${term("Hops", "hops")}</th><th>Driver P2P link</th><th class="num">Measured</th></tr></thead><tbody>
@@ -630,6 +682,37 @@ function renderTopo() {
   } else patch($("#t-bw"), "");
   patch($("#t-raw"), (TP.smi ? `<details class="sec"><summary>amd-smi / rocm-smi topology (raw)</summary><div class="log tall">${esc(TP.smi)}</div></details>` : "") +
     (TP.rbt_output ? `<details class="sec"><summary>rocm-bandwidth-test output (raw)</summary><div class="log tall">${esc(TP.rbt_output)}</div></details>` : ""));
+}
+function p2pPanel(tp) {
+  const ch = S.plan.choice, prof = S.profile, mode = (S.prefs && S.prefs.p2p) || "auto";
+  if ((tp.gpus || []).length < 2) return "";
+  const pairs = tp.pairs || [];
+  const linked = pairs.filter((p) => p.kfd_p2p).length;
+  const vram = Object.fromEntries((prof.gpus || []).map((g) => [g.index, g.vram_gb || 0]));
+  const smallBar = (tp.gpus || []).filter((g) => g.large_bar && g.large_bar < (vram[g.index] || 0) * 0.9);
+  const amd = prof.cpu.vendor === "amd", vm = !["none", "unknown", ""].includes(prof.os.virt);
+  const bw = tp.bandwidth;
+  const items = [
+    [linked === pairs.length && pairs.length > 0 ? "ok" : linked ? "warn" : "fail", "Driver P2P links",
+      linked === pairs.length ? `All ${pairs.length} GPU pairs have a direct link.` : linked ? `${linked} of ${pairs.length} pairs have a direct link.`
+        : tp.kfd_p2p_supported ? "The driver created no direct links between any pair." : "This kernel does not report P2P links (no p2p_links in the KFD topology)."],
+    [smallBar.length ? "fail" : "ok", "Large BAR (Resizable BAR / Above 4G)",
+      smallBar.length ? `GPU ${smallBar.map((g) => g.index).join(", ")} expose only ${fmt(smallBar[0].large_bar, 0)} GB of VRAM. Turn on Above 4G decoding and Resizable BAR in the BIOS.` : "Every card exposes its full VRAM."],
+    [prof.os.iommu_pt ? "ok" : amd ? "warn" : "info", "iommu=pt on the kernel command line",
+      prof.os.iommu_pt ? "Set." : "Not set. The validated setups boot with iommu=pt (and ACS off)."],
+    [amd ? "ok" : "warn", "CPU platform", amd ? "AMD: the wiki-validated P2P platform." : "Intel: P2P can enumerate but often does not speed up inference. A/B it."],
+    [vm ? "fail" : "ok", "Bare metal", vm ? `Running in a VM (${esc(prof.os.virt)}): passthrough usually blocks peer access.` : "Not a VM."],
+    [bw ? (bw.peer.flat().every(Boolean) ? "ok" : "warn") : "info", "Measured",
+      bw ? (bw.peer.flat().every(Boolean) ? "PyTorch can copy directly between every pair." : "PyTorch cannot copy directly between some pairs.") : "Not measured yet. Use the button above."],
+  ];
+  const label = { ok: "OK", warn: "Check", fail: "Missing", info: "Tip" };
+  const now = ch.p2p == null ? "not used (one GPU)" : ch.p2p ? "on" : "off (P2P=0, traffic goes through the CPU)";
+  return `<div class="sec"><h2>P2P for vLLM</h2>
+    <div class="row" style="margin-bottom:12px"><div class="seg">${[["auto", "Auto"], ["on", "On"], ["off", "Off"]].map(([k, l]) => `<button class="${mode === k ? "on" : ""}" data-act="p2p" data-arg="${k}">${l}</button>`).join("")}</div>
+      <span>vLLM uses P2P: <b>${esc(now)}</b></span><span class="muted">${mode === "auto" ? "Auto follows the measurement, or a safe guess before one." : "Set by you."}</span></div>
+    <p class="muted" style="margin:0 0 6px">The switch only tells vLLM whether to use direct GPU-to-GPU copies. Whether the cards <i>can</i> depends on the driver, kernel and BIOS, below. Forcing it on without driver links can hang multi-GPU serving.</p>
+    ${items.map(([lvl, t, d]) => `<div class="check"><span>${pill(lvl, label[lvl])}</span><div class="t">${esc(t)}</div><div class="d">${d}</div></div>`).join("")}
+    ${linked < pairs.length ? `<p style="margin-top:12px">To turn on driver P2P, follow the <a href="https://blivioniag.github.io/gfx1030-wiki/tuning/p2p.html" target="_blank" rel="noopener">wiki's P2P page</a> and the <a href="https://github.com/blivioniag/v620_toolbox/tree/master/pcie_p2p" target="_blank" rel="noopener">v620_toolbox pcie_p2p</a> scripts (kernel options, iommu=pt, ACS off, large BAR; validated on Fedora with an AMD CPU), reboot, then Rescan and measure here.</p>` : ""}</div>`;
 }
 function topoSvg(tp) {
   const gpus = tp.gpus; if (!gpus.length) return `<p class="empty">No GPUs to map.</p>`;

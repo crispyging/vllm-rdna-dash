@@ -260,8 +260,10 @@ def default_prefs():
         "root": os.environ.get("RDNA_DASH_ROOT") or os.path.expanduser("~/vllm-rdna"),
         "port": None,
         "max_len": None,
-        "lan": False,            # bind the model server on all interfaces
-        "p2p_probe": None,       # result of the P2P probe step
+        "lan": None,             # share the model server on the network (None = yes in a container install)
+        "p2p": "auto",           # auto | on | off: whether vLLM uses GPU peer-to-peer
+        "p2p_probe": None,       # result of the P2P probe or bandwidth test
+        "download_mbps": 0,      # model download speed limit in MB/s, 0 = unlimited
         "ple": "auto",           # auto | bf16 | int4 | int4-disk
     }
 
@@ -502,7 +504,9 @@ def build_plan(profile, prefs=None, registry=None):
     p2p = None
     if multi:
         virt = os_i.get("virt", "unknown")
-        if p.get("p2p_probe") is not None:
+        if p.get("p2p") in ("on", "off"):
+            p2p, why = p["p2p"] == "on", "Chosen by you on the Topology page."
+        elif p.get("p2p_probe") is not None:
             p2p, why = bool(p["p2p_probe"]), "Measured by the P2P probe on this box."
         elif virt not in ("none", "unknown", ""):
             p2p, why = False, "Running in a VM (%s); passthrough usually blocks GPU peer access." % virt
@@ -544,9 +548,14 @@ def build_plan(profile, prefs=None, registry=None):
     if busy:
         checks.append(check("port", "warn", "Port %d is already serving (%s)" % (port, ", ".join(m for m in busy[0]["models"] if m) or "unknown"),
                             "Attach the dashboard to that server, or pick another port for a new one."))
-    host = "0.0.0.0" if p.get("lan") else "127.0.0.1"
-    settings.append(setting("Endpoint", "http://%s:%d/v1" % ("<this-box>" if p.get("lan") else "127.0.0.1", port),
-                            "Reachable from your LAN." if p.get("lan") else "Local only. Turn on LAN access to share it."))
+    lan = p.get("lan")
+    if lan is None:
+        lan = bool(profile.get("runtime", {}).get("container"))
+    p["lan"] = lan
+    host = "0.0.0.0" if lan else "127.0.0.1"
+    settings.append(setting("Endpoint", "http://%s:%d/v1" % ("this-box" if lan else "127.0.0.1", port),
+                            "Shared on your network: any app on it can use the model." if lan
+                            else "Only this machine can reach it. Turn on network sharing in Change to share it."))
 
     free = profile.get("disk", {}).get("data_free_gb") or profile.get("disk", {}).get("home_free_gb")
     need = 120 if r.get("ple") else 40
@@ -559,6 +568,7 @@ def build_plan(profile, prefs=None, registry=None):
     paths = {"root": root, "venv": os.path.join(root, "venv-7.14.0"), "src": os.path.join(root, "vllm-rdna"),
              "models": os.path.join(root, "models"), "cache": os.path.join(root, "cache"),
              "compose": os.path.join(root, "vllm-compose.yml"),
+             "download_limit": os.path.join(root, "dash", "download-limit"),
              # In the dashboard container ~ is the container's; keep everything under the shared data dir.
              "hf_cache": os.path.join(root, "hf-cache") if profile.get("runtime", {}).get("container")
              else os.path.expanduser("~/.cache/huggingface")}
@@ -629,10 +639,9 @@ def container_spec(reg, paths, r, used, tp, port, host, served, max_len, p2p, hs
             "%s:/root/.triton/cache" % os.path.join(paths["cache"], "triton"),
             "%s:/root/.cache/vllm" % os.path.join(paths["cache"], "vllm")]
     ccfg = r.get("container", {})
-    target = r["model"]["repo"]
-    if ccfg.get("mount_model"):
-        vols.append("%s:/model" % model_dir)
-        target = "/model"
+    # Always serve a downloaded folder: one download location for every recipe, no HF cache lookups.
+    vols.append("%s:/model" % model_dir)
+    target = "/model"
     if ple:
         vols.append("%s:/ples_int4" % ple_dir)
         env["VLLM_PLE_QUANT_DIR"] = "/ples_int4"
@@ -775,28 +784,13 @@ def build_steps(reg, path, r, multi, paths, model_dir, ple, rocm_home, launch, c
                                  "commands below in a terminal. Setup carries on without them; you can do them any time.",
                       "pending": [c["id"] for c in tune if c["level"] == "rec"], "checks": tune})
     m = r["model"]
-    rev = " --revision %s" % q(m["revision"]) if m.get("revision") else ""
     venv, src = paths["venv"], paths["src"]
     if path == "container":
         eng = cont.get("engine") or "docker"
         steps.append({"id": "pull", "kind": "run", "title": "Pull the vllm-rdna image",
                       "summary": "Hub bake of rdna_extras: ROCm 7.14, torch 2.12, Triton 3.7.1.",
                       "script": "%s pull %s" % (eng, reg["image"])})
-        mounted = r.get("container", {}).get("mount_model")
-        # Download to where the server reads: a mounted folder, or the HF cache it serves the repo id from.
-        if mounted:
-            inner = "hf download %s%s --local-dir /models/%s" % (m["repo"], rev, m["dir"])
-        else:
-            inner = "hf download %s%s" % (m["repo"], rev)
-        if ple:
-            inner += " && hf download %s --include '%s/*' --local-dir /models/%s" % (r["ple"]["repo"], r["ple"]["subdir"], r["ple"]["dir"])
-        tok = " -e HF_TOKEN"  # passes the caller's token through only when it is set
-        steps.append({"id": "model", "kind": "run", "title": "Download the model",
-                      "summary": "%s from Hugging Face into %s, using the image's own hf CLI."
-                                 % (m["repo"], paths["models"] if mounted else paths["hf_cache"]),
-                      "script": "mkdir -p %s %s\n%s run --rm%s --security-opt label=disable -v %s:/models -v %s:/root/.cache/huggingface %s bash -lc %s"
-                                % (q(paths["models"]), q(paths["hf_cache"]), eng, tok, q(paths["models"]), q(paths["hf_cache"]),
-                                   reg["image"], q(inner))})
+        steps.append(download_step(m, r, ple, paths, model_dir))
         steps.append({"id": "compose", "kind": "write", "title": "Write the vLLM compose file",
                       "summary": "Saves the tuned service to %s so you can also run it by hand with compose." % paths["compose"]})
     else:
@@ -840,16 +834,7 @@ def build_steps(reg, path, r, multi, paths, model_dir, ple, rocm_home, launch, c
                           "summary": "Asks PyTorch which card pairs reach each other directly. The plan turns P2P on only "
                                      "if every pair can.",
                           "script": "%s/bin/python - <<'PY'\n%sPY" % (q(venv), P2P_PROBE)})
-        hf = 'HF="%s/bin/hf"; [ -x "$HF" ] || HF="%s/bin/huggingface-cli"' % (venv, venv)
-        dl = [hf, "mkdir -p %s" % q(paths["models"]), '"$HF" download %s%s --local-dir %s' % (m["repo"], rev, q(model_dir))]
-        if ple:
-            dl.append('"$HF" download %s --include "%s/*" --local-dir %s'
-                      % (r["ple"]["repo"], r["ple"]["subdir"], q(os.path.join(paths["models"], r["ple"]["dir"]))))
-        if m.get("must_contain"):
-            dl.append('test -f %s/%s || { echo "missing %s in the checkpoint"; exit 1; }'
-                      % (q(model_dir), m["must_contain"], m["must_contain"]))
-        steps.append({"id": "model", "kind": "run", "title": "Download the model",
-                      "summary": "%s to a local folder (the launcher runs offline)." % m["repo"], "script": "\n".join(dl)})
+        steps.append(download_step(m, r, ple, paths, model_dir))
         steps.append({"id": "dryrun", "kind": "run", "title": "Dry-run the tuned launch",
                       "summary": "serve_rdna.sh PRINT=1 prints the exact env and argv without starting anything.",
                       "script": launch["dry_run"]})
@@ -859,6 +844,24 @@ def build_steps(reg, path, r, multi, paths, model_dir, ple, rocm_home, launch, c
     steps.append({"id": "smoke", "kind": "smoke", "title": "First request",
                   "summary": "Health check, model list, and one chat completion with timing."})
     return steps
+
+
+def download_step(m, r, ple, paths, model_dir):
+    """Model (and PLE table) into plain folders, with a live speed limit and progress."""
+    dl = '"${RDNA_PY:-python3}" -m rdna_dash.download'
+    lim = "--limit-file %s" % q(paths["download_limit"])
+    lines = ["%s %s %s%s %s" % (dl, q(m["repo"]), q(model_dir),
+                                " --revision %s" % q(m["revision"]) if m.get("revision") else "", lim)]
+    if ple:
+        lines.append("%s %s %s --include %s %s" % (dl, q(r["ple"]["repo"]), q(os.path.join(paths["models"], r["ple"]["dir"])),
+                                                   q(r["ple"]["subdir"] + "/*"), lim))
+    if m.get("must_contain"):
+        lines.append('test -f %s/%s || { echo "missing %s in the checkpoint"; exit 1; }'
+                     % (q(model_dir), m["must_contain"], m["must_contain"]))
+    return {"id": "model", "kind": "run", "title": "Download the model", "download": True,
+            "summary": "%s into %s. Resumes if interrupted; set a speed limit below, even while it runs. "
+                       "Gated models need HF_TOKEN." % (m["repo"], model_dir),
+            "script": "\n".join(lines)}
 
 
 P2P_PROBE = """import json, torch

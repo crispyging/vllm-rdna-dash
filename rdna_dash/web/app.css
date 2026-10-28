@@ -378,4 +378,6 @@ table.t td.num, table.t th.num { text-align: right; }
   .rail::-webkit-scrollbar { display: none; }
 }
 .tune-list { margin-top: 4px; }
+.dl-limit { margin: 6px 0 4px; gap: 8px; }
+.dl-limit input { width: 100px; padding: 6px 9px; background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 8px; }
 .tune-list .check:first-child { padding-top: 4px; }

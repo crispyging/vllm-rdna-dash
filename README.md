@@ -93,6 +93,8 @@ Taken in demo mode (`python -m rdna_dash --demo`): a pretend 4 × V620 box with 
 
 Every finding comes as a plain sentence, the fix for your package manager, and a wiki link. Steps that need root are never run for you; they show up as commands to paste. Everything else (uv, the ROCm 7.14 PyTorch venv, cloning and building the fork, the model download, the P2P probe, the dry run, compose.yml, the start-up and a first request) runs from one button or one step at a time, with live logs.
 
+**Model downloads.** A built-in downloader fetches the model (and the Flash-Next PLE table) into `models/` in the data folder, which is the folder the server reads. It shows a progress bar with speed and time left, resumes an interrupted download, and skips files that are already complete. Set **Max download speed** on the step (MB/s); you can change it while a download is running and it applies within a second. Gated models need `HF_TOKEN`.
+
 **Tuning per box.** The plan picks:
 - the recipe
 - container or host venv
@@ -125,7 +127,7 @@ A log doctor matches known vLLM-on-RDNA failures (no GPU access, missing gfx1030
 
 It reports TTFT p50/p95, prefill tok/s, per-user decode tok/s, inter-token latency, aggregate output and recall. Each run is saved with a fingerprint (box, recipe, TP/PP, P2P, PLE, ROCm) and can be compared with others. The CLI version: `rdna-dash bench http://host:port/v1 --suite standard`.
 
-**Topology.** Draws each GPU's PCIe path (root port, PLX/Broadcom switches, the on-card bridge), its link gen and width, NUMA node and BAR size. For every pair it shows the path type, hop count, and whether the driver created a KFD P2P link. "Measure" runs a PyTorch peer-copy test (in the venv or the image), drawn as a heatmap; the result feeds the P2P setting. If `rocm-bandwidth-test` is installed it runs that too, and raw `amd-smi topology` output is one click away.
+**Topology.** Draws each GPU's PCIe path (root port, PLX/Broadcom switches, the on-card bridge), its link gen and width, NUMA node and BAR size. For every pair it shows the path type, hop count, and whether the driver created a KFD P2P link. "Measure" runs a PyTorch peer-copy test (in the venv or the image), drawn as a heatmap; the result feeds the P2P setting. The **P2P for vLLM** panel has an Auto / On / Off switch for whether vLLM uses direct GPU-to-GPU copies, plus a checklist of what the driver needs before it can: P2P links in the KFD topology, large BAR, `iommu=pt`, CPU platform, bare metal. When driver P2P is off it links the wiki and v620_toolbox `pcie_p2p` steps; that part is kernel and BIOS work the dashboard can't do for you. If `rocm-bandwidth-test` is installed it runs that too, and raw `amd-smi topology` output is one click away.
 
 **Recommended V620 tuning: ECC off and a 180 W cap.** Both are recommended by default and shown as a setup step right after the host check. They need root and reboots, so setup carries on without them.
 
@@ -186,7 +188,7 @@ A later file with the same `id` overrides an earlier one. Broken files are liste
 - The dashboard container mounts the Docker socket so it can run the vLLM container. That is root-equivalent on the host, so only run it without a login on a network you trust.
 - **To require a login**, set `RDNA_DASH_TOKEN` to a long random string in `~/vllm-rdna/.env` and rerun the installer. You then sign in once per browser; fleet peers send it as `Authorization: Bearer`.
 - Either way, websites you visit can't drive it: POSTs need a custom header a cross-site page cannot send, and without a login it only answers to IP addresses and local names (`gpu-box`, `gpu-box.local`, `.lan`), which blocks DNS-rebinding pages. Use another name by listing it in `RDNA_DASH_ALLOWED_HOSTS`.
-- The model server binds to localhost unless you turn on LAN sharing.
+- The model server (the OpenAI-compatible endpoint) listens on your network in a container install, so other machines can use it at `http://your-gpu-box:8000/v1`; the dashboard shows the address you reached it with. A host install keeps it on localhost until you press **Share on my network**. vLLM itself has no login, so anyone on the network can send it requests.
 - Install scripts come from the plan, never from the browser, and never use sudo.
 - `rdna-dash share` and "Copy redacted report" strip the hostname, username and tokens.
 

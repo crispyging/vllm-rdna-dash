@@ -8,7 +8,14 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-DEMO_PORT = 18999
+
+
+def free_port():
+    """A free local port, so several demo instances never share a fake server."""
+    import socket
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
 
 
 def demo_profile():
@@ -78,8 +85,8 @@ def demo_bandwidth():
 class FakeVllm(object):
     """Enough of the vLLM OpenAI server for the dashboard and the benchmark."""
 
-    def __init__(self, port=DEMO_PORT):
-        self.port = port
+    def __init__(self, port=None):
+        self.port = port or free_port()
         self.ready_at = None
         self.running = 0
         self.counters = {"gen": 0.0, "prompt": 0.0, "ttft_sum": 0.0, "ttft_n": 0, "e2e_sum": 0.0, "e2e_n": 0,
@@ -91,8 +98,12 @@ class FakeVllm(object):
     def up(self):
         return self.ready_at is not None and time.time() >= self.ready_at
 
-    def start_server_process(self, boot_seconds=8):
+    def start_server_process(self, boot_seconds=8, background_users=3):
         self.ready_at = time.time() + boot_seconds
+        if background_users and not getattr(self, "_traffic", False):
+            self._traffic = True
+            for k in range(background_users):
+                threading.Thread(target=self._user, args=(k,), daemon=True).start()
         if not self.httpd:
             fake = self
 
@@ -154,6 +165,26 @@ class FakeVllm(object):
             self.httpd.daemon_threads = True
             threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
 
+    def _user(self, k):
+        """A pretend client, so the demo dashboard has steady live numbers."""
+        import urllib.request
+        rnd = random.Random(k)
+        time.sleep(k * 1.3)
+        while True:
+            if not self.up():
+                time.sleep(1)
+                continue
+            body = json.dumps({"model": "flash-next", "max_tokens": rnd.randint(120, 260), "stream": True,
+                               "messages": [{"role": "user", "content": "lorem ipsum dolor " * rnd.randint(150, 900)}]}).encode()
+            try:
+                req = urllib.request.Request("http://127.0.0.1:%d/v1/chat/completions" % self.port, data=body,
+                                             headers={"Content-Type": "application/json"})
+                with urllib.request.urlopen(req, timeout=120) as r:
+                    r.read()
+            except Exception:
+                pass
+            time.sleep(rnd.uniform(0.2, 1.5))
+
     def stop(self):
         self.ready_at = None
 
@@ -181,7 +212,12 @@ class FakeVllm(object):
         prefill_rate = 1900.0 / (1 + 0.15 * (conc - 1)) / (1 + prompt_tokens / 160000.0)
         decode_rate = 52.0 / (1 + 0.22 * (conc - 1))
         t0 = time.time()
-        time.sleep(min(60, prompt_tokens / prefill_rate))
+        # Count prompt tokens as they are read so prefill shows up smoothly in /metrics.
+        slices = 10
+        for _ in range(slices):
+            time.sleep(min(60, prompt_tokens / prefill_rate) / slices)
+            with self.lock:
+                self.counters["prompt"] += prompt_tokens / float(slices)
         ttft = time.time() - t0
         stream = req.get("stream")
         import re as _re
@@ -213,7 +249,6 @@ class FakeVllm(object):
         with self.lock:
             self.running -= 1
             c = self.counters
-            c["prompt"] += prompt_tokens
             c["ttft_sum"] += ttft
             c["ttft_n"] += 1
             c["e2e_sum"] += e2e

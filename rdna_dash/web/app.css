@@ -328,10 +328,10 @@ table.t td.num, table.t th.num { text-align: right; }
 .attach input { min-width: min(320px, 100%); padding: 9px 11px; background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 8px; }
 .warn-panel { margin-top: 16px; border-color: color-mix(in srgb, var(--serious) 45%, var(--line)); }
 
-.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 148px), 1fr)); gap: 16px; margin-top: 16px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 138px), 1fr)); gap: 16px; margin-top: 16px; }
 .tile { background: var(--bg-2); border: 1px solid var(--line); border-radius: 16px; padding: 16px 18px 12px; display: flex; flex-direction: column; min-width: 0; }
 .tile-l { font-size: 13px; color: var(--text-2); font-weight: 500; display: flex; align-items: center; gap: 6px; }
-.tile-n { font: italic 900 34px/1.05 var(--display); letter-spacing: -0.02em; margin: 8px 0 2px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tile-n { font: italic 900 30px/1.05 var(--display); letter-spacing: -0.02em; margin: 8px 0 2px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .tile-n small { font: 700 13px var(--display); font-style: normal; color: var(--muted); margin-left: 5px; letter-spacing: 0; }
 .tile-s { font-size: 12.5px; color: var(--muted); }
 .tile-sp { margin-top: auto; padding-top: 10px; }

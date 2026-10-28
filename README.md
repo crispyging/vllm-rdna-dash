@@ -6,6 +6,8 @@ Install the tool, open it, press **Set everything up**, and chat with a model. I
 
 Built for the [gfx1030 community](https://blivioniag.github.io/gfx1030-wiki/): Radeon PRO V620 and W6800 first, RX 6800/6900 and the RDNA2 cousins (via `HSA_OVERRIDE_GFX_VERSION`) too.
 
+<p align="center"><img src="docs/media/dashboard.png" alt="RDNA Dash live dashboard: server state, output speed, metric tiles and throughput charts" width="900"></p>
+
 ## Quick start
 
 On the GPU box (Linux with Docker or Podman), one line:
@@ -33,6 +35,23 @@ curl -fsSL https://raw.githubusercontent.com/crispyging/vllm-rdna-dash/main/inst
 **Just looking?** `python -m rdna_dash --demo` runs the whole UI against a pretend 4 × V620 box and a fake model server. It installs nothing.
 
 **No browser handy?** `docker exec vllm-rdna-dash python -m rdna_dash doctor` (or `rdna-dash doctor` on a host install) prints the same checks in the terminal.
+
+## Screenshots
+
+Taken in demo mode (`python -m rdna_dash --demo`): a pretend 4 × V620 box with a fake model server, so the numbers are illustrative.
+
+| | |
+|---|---|
+| ![Setup: the box is checked and the best plan is picked](docs/media/setup.png) | ![Setup steps, all done after one click](docs/media/setup-steps.png) |
+| **Setup.** What the box has, the plan, and one button. | **One click later.** Every step done, with logs a click away. |
+| ![GPU cards with busy rings, memory and power](docs/media/dashboard-gpus.png) | ![Benchmark compare charts and run table](docs/media/benchmark.png) |
+| **GPUs.** Busy, memory, power against the cap, temperatures and clocks. | **Benchmark.** Prefill, first token, decode and recall, saved and compared. |
+| ![PCIe topology map with switches and links](docs/media/topology.png) | ![Every GPU pair with hops, P2P and a bandwidth heatmap](docs/media/topology-bandwidth.png) |
+| **Topology.** How each card reaches the CPU and the others. | **Bandwidth.** Measured GB/s for every pair. |
+| ![Chat with timing per reply](docs/media/chat.png) | ![Dashboard in light mode](docs/media/dashboard-light.png) |
+| **Chat.** First-token time and tok/s on every reply. | **Light mode.** |
+
+<p align="center"><img src="docs/media/mobile.png" alt="Dashboard on a phone" width="260"></p>
 
 ## What it does
 

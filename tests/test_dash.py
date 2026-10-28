@@ -203,7 +203,7 @@ class BenchTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.fake = demo.FakeVllm(port=18998)
-        cls.fake.start_server_process(boot_seconds=0)
+        cls.fake.start_server_process(boot_seconds=0, background_users=0)
 
     def test_prompt_sizing_hits_target(self):
         c = bench.Client("http://127.0.0.1:18998/v1", "flash-next")

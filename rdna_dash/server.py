@@ -83,9 +83,8 @@ class App(object):
         self.registry = tuning.load_registry()
         self.plan = tuning.build_plan(self.profile, prefs, self.registry)
         if self.demo:
-            from .demo import DEMO_PORT
             # Point the plan at the fake server so the dashboard and bench exercise real code paths.
-            self.plan["choice"]["port"] = DEMO_PORT
+            self.plan["choice"]["port"] = self.fake.port
         return self.plan
 
     def server_url(self):

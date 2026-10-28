@@ -27,6 +27,22 @@ from .telemetry import GpuReader, HostReader, Sampler
 
 WEB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 
+LOGIN = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RDNA Dash sign in</title><style>
+:root{color-scheme:dark;--bg:#0e0e10;--bg2:#141417;--line:#2a2a30;--text:#f2f1ee;--muted:#8b8a84;--key:#ffd21f;--brand:#ff3b30}
+@media (prefers-color-scheme:light){:root{color-scheme:light;--bg:#fafaf8;--bg2:#f1f0ec;--line:#dddcd6;--text:#0b0b0b;--muted:#6b6a65;--key:#b88a00}}
+body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--text);font:15px/1.5 system-ui,sans-serif;padding:16px}
+form{width:min(420px,100%%);background:var(--bg2);border:1px solid var(--line);border-radius:18px;padding:28px}
+h1{font:italic 900 34px/1 "Montserrat","Arial Black",sans-serif;text-transform:uppercase;margin:0 0 10px;text-shadow:3px 3px 0 var(--brand)}
+h1 b{color:var(--key)}p{color:var(--muted);margin:0 0 18px}code{font-size:13px}
+input{width:100%%;box-sizing:border-box;padding:11px 12px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--text);font:14px ui-monospace,monospace}
+button{margin-top:14px;width:100%%;padding:13px;border:0;border-radius:10px;background:var(--key);color:#0b0b0b;font:italic 900 16px "Montserrat","Arial Black",sans-serif;text-transform:uppercase;cursor:pointer}
+.err{color:#ec835a;margin:10px 0 0}</style></head><body>
+<form method="post" action="/login"><h1>RDNA<b>DASH</b></h1>
+<p>Paste the access token. It is printed when the dashboard starts (<code>docker logs vllm-rdna-dash</code>), or set your own with <code>RDNA_DASH_TOKEN</code>.</p>
+<input name="token" type="password" autocomplete="current-password" placeholder="access token" autofocus required>
+%s<button type="submit">Sign in</button></form></body></html>"""
+
 
 def _hash(script):
     return hashlib.sha1((script or "").encode()).hexdigest()[:12]
@@ -440,7 +456,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(302, "", headers={"Location": "/", "Set-Cookie":
                                   "rdna_dash=%s; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000" % self.app.cfg["token"]})
         if not self._authed():
-            return self._send(401, "<h1>Locked</h1><p>Open the link with ?token= that rdna-dash printed when it started.</p>", "text/html")
+            if u.path.startswith("/api/"):
+                return self._send(401, {"error": "token required"})
+            return self._send(401, LOGIN % "", "text/html; charset=utf-8")
         if not u.path.startswith("/api/"):
             return self._static(u.path)
         try:
@@ -450,8 +468,20 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             self._send(500, {"error": str(e)})
 
+    def _login(self):
+        n = min(int(self.headers.get("Content-Length") or 0), 4096)
+        form = urllib.parse.parse_qs(self.rfile.read(n).decode("utf-8", "replace"))
+        tok = (form.get("token") or [""])[0].strip()
+        if tok and hmac.compare_digest(tok, self.app.cfg["token"]):
+            return self._send(303, "", headers={"Location": "/", "Set-Cookie":
+                              "rdna_dash=%s; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000" % self.app.cfg["token"]})
+        time.sleep(1)  # slow down guessing
+        return self._send(401, LOGIN % '<p class="err">That token did not match.</p>', "text/html; charset=utf-8")
+
     def do_POST(self):
         u = urllib.parse.urlparse(self.path)
+        if u.path == "/login":
+            return self._login()
         if not self._authed():
             return self._send(401, {"error": "token required"})
         if self.headers.get("X-Rdna-Dash") != "1" and not self.headers.get("Authorization"):
@@ -639,8 +669,9 @@ def run(host="127.0.0.1", port=7860, demo=False):
     shown = "127.0.0.1" if host in ("0.0.0.0", "::") else host
     print("vllm-rdna-dash %s%s" % (__version__, " (demo mode)" if demo else ""))
     if app.cfg_requires_token:
-        print("  Open: http://<this-box>:%d/?token=%s" % (port, app.cfg["token"]))
-        print("  The token is also in %s" % store.config_path())
+        print("  Open http://<this-box>:%d from any machine on your network and sign in with:" % port)
+        print("  token: %s" % app.cfg["token"])
+        print("  (or open http://<this-box>:%d/?token=%s once; set RDNA_DASH_TOKEN to pick your own)" % (port, app.cfg["token"]))
     else:
         print("  Open: http://%s:%d/" % (shown, port))
         print("  Local only. To reach it from another machine: ssh -L %d:127.0.0.1:%d <this-box>" % (port, port))

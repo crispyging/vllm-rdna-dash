@@ -1,0 +1,47 @@
+# vllm-rdna in a container, by hand. Works with `docker compose`, `podman compose`
+# and `podman-compose`. The dashboard writes a tuned copy of this for your box;
+# use this one if you want to skip the dashboard.
+#
+#   cp vllm.env.example .env   # then edit MODEL, GPUS, TP ...
+#   docker compose -f vllm-compose.yml up -d   # or: podman compose ...
+#   curl -sf http://127.0.0.1:8000/health
+#
+# Rootless Podman: change the group_add line to  group_add: [keep-groups]
+# so your host video/render groups reach the container (keep-groups must be
+# the only entry).
+
+name: vllm-rdna
+services:
+  vllm:
+    image: ${IMAGE:-docker.io/blivioniag/vllm-rdna:v0.31.0-extras}
+    container_name: vllm-rdna
+    devices: [/dev/kfd, /dev/dri]
+    group_add: [video, render]
+    ipc: host
+    # label=disable lets the container open /dev/kfd under SELinux (Fedora, RHEL).
+    security_opt: [seccomp=unconfined, label=disable]
+    ports: ["${BIND:-127.0.0.1}:${PORT:-8000}:8000"]
+    restart: "no"
+    environment:
+      HIP_VISIBLE_DEVICES: "${GPUS:-0}"
+      HSA_OVERRIDE: "${HSA_OVERRIDE_GFX_VERSION:-}"
+      NCCL_P2P_DISABLE: "${NCCL_P2P_DISABLE:-0}"
+      VLLM_RDNA_AR: "${VLLM_RDNA_AR:-1}"
+      HF_TOKEN: "${HF_TOKEN:-}"
+      MODEL: "${MODEL:-cyankiwi/Qwen3.8-27B-AWQ-INT4}"
+      SERVED_NAME: "${SERVED_NAME:-vllm-rdna}"
+      TP: "${TP:-1}"
+      MAX_LEN: "${MAX_LEN:-8192}"
+      EXTRA_ARGS: "${EXTRA_ARGS:---language-model-only --skip-mm-profiling --trust-remote-code}"
+    volumes:
+      - "${HF_CACHE:-~/.cache/huggingface}:/root/.cache/huggingface"
+      - "${CACHE_DIR:-./cache}/triton:/root/.triton/cache"
+      - "${CACHE_DIR:-./cache}/vllm:/root/.cache/vllm"
+    # Expanded inside the container so optional flags can stay empty.
+    entrypoint: ["bash", "-lc"]
+    command:
+      - >-
+        if [ -n "$$HSA_OVERRIDE" ]; then export HSA_OVERRIDE_GFX_VERSION="$$HSA_OVERRIDE"; fi;
+        exec vllm serve "$$MODEL" --dtype float16 --host 0.0.0.0 --port 8000
+        --served-model-name "$$SERVED_NAME" --tensor-parallel-size "$$TP"
+        --max-model-len "$$MAX_LEN" $$EXTRA_ARGS

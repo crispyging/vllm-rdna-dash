@@ -1,47 +1,38 @@
-# vllm-rdna in a container, by hand. Works with `docker compose`, `podman compose`
-# and `podman-compose`. The dashboard writes a tuned copy of this for your box;
-# use this one if you want to skip the dashboard.
+# vllm-rdna-dash: the dashboard as a container, reachable from your whole network.
 #
-#   cp .env.example .env      # then edit MODEL, GPUS, TP ...
-#   docker compose up -d      # or: podman compose up -d
-#   curl -sf http://127.0.0.1:8000/health
+#   curl -fsSL https://raw.githubusercontent.com/crispyging/vllm-rdna-dash/main/compose.yml -o compose.yml
+#   docker compose up -d                 # or: podman compose up -d
+#   docker logs vllm-rdna-dash           # shows the access token
 #
-# Rootless Podman: change the group_add line to  group_add: [keep-groups]
-# so your host video/render groups reach the container (keep-groups must be
-# the only entry).
+# Then open http://<this-box>:7860 from any machine and sign in with the token.
+#
+# The dashboard starts and stops the vLLM container through the Docker socket.
+# Anyone with the token can do that, so keep the token private.
 
-name: vllm-rdna
+name: vllm-rdna-dash
 services:
-  vllm:
-    image: ${IMAGE:-docker.io/blivioniag/vllm-rdna:v0.31.0-extras}
-    container_name: vllm-rdna
+  dash:
+    image: ghcr.io/crispyging/vllm-rdna-dash:latest
+    container_name: vllm-rdna-dash
+    restart: unless-stopped
+    # Host networking: the dashboard is on <this-box>:7860 and reaches the model server on localhost.
+    network_mode: host
+    # Lets the dashboard read the GPUs and check they are usable.
     devices: [/dev/kfd, /dev/dri]
-    group_add: [video, render]
-    ipc: host
-    # label=disable lets the container open /dev/kfd under SELinux (Fedora, RHEL).
-    security_opt: [seccomp=unconfined, label=disable]
-    ports: ["${BIND:-127.0.0.1}:${PORT:-8000}:8000"]
-    restart: "no"
+    group_add: [video, render]          # rootless Podman: [keep-groups]
+    security_opt: [label=disable]        # SELinux hosts (Fedora, RHEL)
     environment:
-      HIP_VISIBLE_DEVICES: "${GPUS:-0}"
-      HSA_OVERRIDE: "${HSA_OVERRIDE_GFX_VERSION:-}"
-      NCCL_P2P_DISABLE: "${NCCL_P2P_DISABLE:-0}"
-      VLLM_RDNA_AR: "${VLLM_RDNA_AR:-1}"
-      HF_TOKEN: "${HF_TOKEN:-}"
-      MODEL: "${MODEL:-cyankiwi/Qwen3.8-27B-AWQ-INT4}"
-      SERVED_NAME: "${SERVED_NAME:-vllm-rdna}"
-      TP: "${TP:-1}"
-      MAX_LEN: "${MAX_LEN:-8192}"
-      EXTRA_ARGS: "${EXTRA_ARGS:---language-model-only --skip-mm-profiling --trust-remote-code}"
+      # Models, caches, the generated vLLM compose.yml, benchmarks and settings live here.
+      # It must be the same path on the host and in the container.
+      RDNA_DASH_ROOT: ${DATA:-/srv/vllm-rdna}
+      XDG_CONFIG_HOME: ${DATA:-/srv/vllm-rdna}/dash/config
+      XDG_STATE_HOME: ${DATA:-/srv/vllm-rdna}/dash/state
+      RDNA_DASH_TOKEN: ${RDNA_DASH_TOKEN:-}  # empty = generate one and print it in the logs
+      RDNA_DASH_LABEL: ${BOX_NAME:-}         # name shown in the dashboard (default: hostname)
+      RDNA_DASH_ENGINE: ${ENGINE:-docker}    # docker | podman | podman-rootless
+      HF_TOKEN: ${HF_TOKEN:-}                # only for gated models
     volumes:
-      - "${HF_CACHE:-~/.cache/huggingface}:/root/.cache/huggingface"
-      - "${CACHE_DIR:-./cache}/triton:/root/.triton/cache"
-      - "${CACHE_DIR:-./cache}/vllm:/root/.cache/vllm"
-    # Expanded inside the container so optional flags can stay empty.
-    entrypoint: ["bash", "-lc"]
-    command:
-      - >-
-        if [ -n "$$HSA_OVERRIDE" ]; then export HSA_OVERRIDE_GFX_VERSION="$$HSA_OVERRIDE"; fi;
-        exec vllm serve "$$MODEL" --dtype float16 --host 0.0.0.0 --port 8000
-        --served-model-name "$$SERVED_NAME" --tensor-parallel-size "$$TP"
-        --max-model-len "$$MAX_LEN" $$EXTRA_ARGS
+      - ${DOCKER_SOCK:-/var/run/docker.sock}:/var/run/docker.sock   # Podman: its socket path
+      - ${DATA:-/srv/vllm-rdna}:${DATA:-/srv/vllm-rdna}
+      - /etc/os-release:/host/etc/os-release:ro
+    command: ["--host", "0.0.0.0", "--port", "${PORT:-7860}"]

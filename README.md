@@ -8,23 +8,31 @@ Built for the [gfx1030 community](https://blivioniag.github.io/gfx1030-wiki/): R
 
 ## Quick start
 
-On the GPU box (Linux, Python 3.8+, git):
+On the GPU box (Linux with Docker or Podman), one line:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/crispyging/vllm-rdna-dash/main/install.sh | sh -s -- --start
+curl -fsSL https://raw.githubusercontent.com/crispyging/vllm-rdna-dash/main/install.sh | sh
 ```
 
-Then open <http://127.0.0.1:7860>. From another computer, either tunnel it:
+It starts the dashboard as a container and prints the address and an access token. Open `http://<your-gpu-box>:7860` from any computer on your network and sign in with the token. Run the same line again to update.
+
+Under the hood it:
+- finds Docker or Podman (rootless too)
+- creates `~/vllm-rdna` for models, caches, settings and benchmark results
+- writes a `.env` with a random token there
+- runs [`compose.yml`](compose.yml)
+
+Prefer to do it by hand? Download `compose.yml`, then `docker compose up -d`; the token is in `docker logs vllm-rdna-dash`.
+
+**Without containers:** `install-host.sh` installs the tool directly on the host (Python 3.8+ and git), which is also the only way to build the fork in a host venv:
 
 ```bash
-ssh -L 7860:127.0.0.1:7860 your-gpu-box
+curl -fsSL https://raw.githubusercontent.com/crispyging/vllm-rdna-dash/main/install-host.sh | sh -s -- --start
 ```
 
-or start it with `rdna-dash --host 0.0.0.0` and open the token link it prints.
+**Just looking?** `python -m rdna_dash --demo` runs the whole UI against a pretend 4 × V620 box and a fake model server. It installs nothing.
 
-Just looking? `python -m rdna_dash --demo` runs the whole UI against a pretend 4 × V620 box and a fake model server. It installs nothing.
-
-No browser handy? `rdna-dash doctor` prints the same checks in the terminal.
+**No browser handy?** `docker exec vllm-rdna-dash python -m rdna_dash doctor` (or `rdna-dash doctor` on a host install) prints the same checks in the terminal.
 
 ## What it does
 
@@ -76,9 +84,9 @@ It reports TTFT p50/p95, prefill tok/s, per-user decode tok/s, inter-token laten
 The 180 W cap keeps the cards much cooler and quieter, with little speed loss on memory-bound inference:
 
 ```bash
-sudo ./tools/power.sh status
-sudo ./tools/power.sh 180 --persist   # apply now and at every boot
-sudo ./tools/power.sh --remove        # back to stock on the next reboot
+curl -fsSL https://raw.githubusercontent.com/crispyging/vllm-rdna-dash/main/tools/power.sh | sudo bash -s -- 180 --persist
+#   ... | sudo bash -s -- status     show caps
+#   ... | sudo bash -s -- --remove   back to stock on the next reboot
 ```
 
 When the driver enforces the 250 W VBIOS floor, the dashboard and the script point you to the [v620_toolbox](https://github.com/blivioniag/v620_toolbox) powerfix first.
@@ -86,9 +94,8 @@ When the driver enforces the 250 W VBIOS floor, the dashboard and the script poi
 For ECC, the dashboard shows whether it's on, half-way through the two-reboot switch, or off. It never recommends turning it off when a card already reports ECC errors. The script does the bootloader work:
 
 ```bash
-sudo ./tools/ecc.sh status
-sudo ./tools/ecc.sh off    # then reboot twice
-sudo ./tools/ecc.sh on     # undo, then reboot twice
+curl -fsSL https://raw.githubusercontent.com/crispyging/vllm-rdna-dash/main/tools/ecc.sh | sudo bash -s -- off
+#   then reboot twice. "status" shows where you are, "on" undoes it.
 ```
 
 It handles grubby (Fedora/RHEL), update-grub / grub-mkconfig (Debian/Ubuntu/Arch/openSUSE), kernelstub (Pop!_OS) and systemd-boot `/etc/kernel/cmdline`, and backs up what it edits.
@@ -123,11 +130,12 @@ A later file with the same `id` overrides an earlier one. Broken files are liste
 
 ## Running the container by hand
 
-[`compose.yml`](compose.yml) plus [`.env.example`](.env.example) work with `docker compose`, `podman compose` and `podman-compose`. It uses `label=disable` for SELinux hosts and documents the `keep-groups` change for rootless Podman. The dashboard writes a copy tuned for your box to `~/vllm-rdna/compose.yml`.
+[`examples/vllm-compose.yml`](examples/vllm-compose.yml) plus [`examples/vllm.env.example`](examples/vllm.env.example) run vLLM itself without the dashboard. They work with `docker compose`, `podman compose` and `podman-compose`. It uses `label=disable` for SELinux hosts and documents the `keep-groups` change for rootless Podman. The dashboard writes its own tuned version to `vllm-compose.yml` in its data folder.
 
 ## Security
 
-- The dashboard binds to `127.0.0.1` by default.
+- The container install listens on your network (port 7860) and always needs the token. A host install binds to `127.0.0.1` unless you pass `--host 0.0.0.0`.
+- The dashboard container mounts the Docker socket so it can run the vLLM container. That is root-equivalent on the host, so treat the token like a password; set your own with `RDNA_DASH_TOKEN` in `~/vllm-rdna/.env`.
 - On any other address, every request needs the token (cookie from the one-time link, or `Authorization: Bearer` for fleet peers). POSTs also need a custom header, which a cross-site page cannot send.
 - The model server binds to localhost unless you turn on LAN sharing.
 - Install scripts come from the plan, never from the browser, and never use sudo.
@@ -147,6 +155,9 @@ rdna_dash/
   demo.py       pretend box + fake vLLM server
   web/          the UI (no build step, no CDN scripts)
 recipes/        built-in recipes
+compose.yml     the dashboard container (what install.sh runs)
+Dockerfile      its image, published to ghcr.io/crispyging/vllm-rdna-dash
+examples/       vLLM by hand with compose, no dashboard
 tools/ecc.sh    ECC on/off/status
 tools/power.sh  V620 power cap (180 W default), optional boot unit
 ```

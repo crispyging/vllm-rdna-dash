@@ -55,6 +55,10 @@ def load_config():
     with _lock:
         cfg = _load(config_path(), {})
         changed = False
+        env_tok = os.environ.get("RDNA_DASH_TOKEN", "").strip()
+        if env_tok and cfg.get("token") != env_tok:
+            cfg["token"] = env_tok
+            changed = True
         if not cfg.get("token"):
             cfg["token"] = secrets.token_urlsafe(24)
             changed = True

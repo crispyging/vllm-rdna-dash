@@ -69,7 +69,12 @@ case "${1:-status}" in
         if [ "$watts" -lt 120 ] || [ "$watts" -gt 250 ]; then echo "Pick a cap between 120 and 250 W." >&2; exit 2; fi
         apply "$watts"
         if [ "${2:-}" = "--persist" ]; then
-            install -m 0755 "$(readlink -f "$0")" "$INSTALLED"
+            if [ -f "$0" ] && grep -q "v620-power-cap" "$0" 2>/dev/null; then
+                install -m 0755 "$0" "$INSTALLED"
+            else  # run as `curl ... | sudo bash`: fetch a copy for the boot unit
+                curl -fsSL https://raw.githubusercontent.com/crispyging/vllm-rdna-dash/main/tools/power.sh -o "$INSTALLED"
+                chmod 0755 "$INSTALLED"
+            fi
             cat > "$UNIT" <<EOF
 [Unit]
 Description=Cap Radeon PRO V620 power at ${watts} W

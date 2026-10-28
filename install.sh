@@ -1,58 +1,107 @@
 #!/usr/bin/env sh
-# One-line install for vllm-rdna-dash:
+# Install (or update) the vllm-rdna-dash dashboard as a container:
 #
-#   curl -fsSL <raw-url-of-this-file> | sh
-#   curl -fsSL <raw-url-of-this-file> | sh -s -- --start      # install and start it
+#   curl -fsSL https://raw.githubusercontent.com/crispyging/vllm-rdna-dash/main/install.sh | sh
 #
-# Puts the tool in ~/.local/share/vllm-rdna-dash and a `rdna-dash` command in
-# ~/.local/bin. Needs only git and Python 3.8+. Never uses sudo.
+# Works with Docker or Podman (rootless too). Everything lives in ~/vllm-rdna
+# (set DATA=/some/path to change it). Run it again to update.
 set -eu
 
-REPO_URL="${RDNA_DASH_REPO:-https://github.com/crispyging/vllm-rdna-dash.git}"
-DEST="${RDNA_DASH_HOME:-$HOME/.local/share/vllm-rdna-dash}"
-BIN="$HOME/.local/bin"
-START=0
-for a in "$@"; do [ "$a" = "--start" ] && START=1; done
+RAW="https://raw.githubusercontent.com/crispyging/vllm-rdna-dash/main"
+DATA="${DATA:-$HOME/vllm-rdna}"
+PORT="${PORT:-7860}"
 
 say() { printf '\033[1m%s\033[0m\n' "$*"; }
-need() { command -v "$1" >/dev/null 2>&1; }
+die() { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
+have() { command -v "$1" >/dev/null 2>&1; }
 
-PY=""
-for p in python3 python3.12 python3.11 python3.10 python3.9 python3.8; do
-    if need "$p" && "$p" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)' 2>/dev/null; then PY="$p"; break; fi
-done
-if [ -z "$PY" ]; then
-    echo "Python 3.8 or newer is needed. Install it with your package manager:"
-    echo "  apt: sudo apt install python3    dnf: sudo dnf install python3"
-    echo "  zypper: sudo zypper install python3    pacman: sudo pacman -S python"
-    exit 1
-fi
-if ! need git; then
-    echo "git is needed. Install it with your package manager (apt/dnf/zypper/pacman install git)."
-    exit 1
-fi
-
-if [ -d "$DEST/.git" ]; then
-    say "Updating $DEST"
-    git -C "$DEST" pull --ff-only
+# ---- find a container engine this user can drive ------------------------------
+ENGINE=""; SUDO=""; SOCK=""; FLAVOR="docker"
+if have docker && docker info >/dev/null 2>&1; then
+    ENGINE=docker
+elif have podman && podman info >/dev/null 2>&1; then
+    ENGINE=podman
+elif have docker && have sudo; then
+    say "Your user cannot reach Docker; using sudo for the install (add yourself to the docker group to skip this)."
+    sudo docker info >/dev/null 2>&1 || die "Docker is installed but not running. Start it: sudo systemctl enable --now docker"
+    ENGINE=docker; SUDO=sudo
 else
-    say "Installing to $DEST"
-    mkdir -p "$(dirname "$DEST")"
-    git clone --depth 1 "$REPO_URL" "$DEST"
+    die "No Docker or Podman found. Install one first:
+  Ubuntu/Debian: sudo apt install docker.io docker-compose-v2
+  Fedora/RHEL:   sudo dnf install podman podman-compose
+  Arch:          sudo pacman -S docker docker-compose
+  openSUSE:      sudo zypper install docker docker-compose"
 fi
 
-mkdir -p "$BIN"
-cat > "$BIN/rdna-dash" <<EOF
-#!/usr/bin/env sh
-cd "$DEST" && exec "$PY" -m rdna_dash "\$@"
+if [ "$ENGINE" = docker ]; then
+    SOCK=/var/run/docker.sock
+    if $SUDO docker compose version >/dev/null 2>&1; then COMPOSE="$SUDO docker compose"
+    elif have docker-compose; then COMPOSE="$SUDO docker-compose"
+    else die "Docker Compose is missing. Ubuntu/Debian: sudo apt install docker-compose-v2"; fi
+else
+    FLAVOR=podman
+    if [ "$(podman info --format '{{.Host.Security.Rootless}}' 2>/dev/null)" = true ]; then
+        FLAVOR=podman-rootless
+        SOCK="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock"
+        have systemctl && systemctl --user enable --now podman.socket >/dev/null 2>&1 || true
+    else
+        SOCK=/run/podman/podman.sock
+    fi
+    [ -S "$SOCK" ] || die "Podman's API socket is not running at $SOCK.
+  Rootless: systemctl --user enable --now podman.socket
+  Rootful:  sudo systemctl enable --now podman.socket"
+    if podman compose version >/dev/null 2>&1; then COMPOSE="podman compose"
+    elif have podman-compose; then COMPOSE="podman-compose"
+    else die "No compose for Podman. Install podman-compose (dnf/apt/zypper install podman-compose)."; fi
+fi
+
+# ---- GPU sanity (warn only: the dashboard explains what is missing) ----------------
+[ -e /dev/kfd ] || say "Note: /dev/kfd is missing, so ROCm is not set up yet. The dashboard will show what to install."
+
+# ---- files ----------------------------------------------------------------------
+mkdir -p "$DATA"
+cd "$DATA"
+say "Fetching compose.yml into $DATA"
+curl -fsSL "$RAW/compose.yml" -o compose.yml
+if [ "$FLAVOR" = podman-rootless ]; then
+    sed -i 's/^    group_add: \[video, render\].*/    group_add: [keep-groups]/' compose.yml
+fi
+
+if [ -f .env ]; then
+    say "Keeping your existing $DATA/.env"
+else
+    TOKEN="$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+    cat > .env <<EOF
+# vllm-rdna-dash settings. Edit, then run: $COMPOSE up -d
+DATA=$DATA
+PORT=$PORT
+RDNA_DASH_TOKEN=$TOKEN
+BOX_NAME=$(hostname 2>/dev/null || echo gpu-box)
+ENGINE=$FLAVOR
+DOCKER_SOCK=$SOCK
+# HF_TOKEN=   # only for gated models
 EOF
-chmod +x "$BIN/rdna-dash"
+    chmod 600 .env
+fi
 
-case ":$PATH:" in *":$BIN:"*) ;; *) say "Add $BIN to your PATH (e.g. in ~/.bashrc): export PATH=\"$BIN:\$PATH\"" ;; esac
+# ---- start ------------------------------------------------------------------------
+say "Pulling and starting the dashboard"
+$COMPOSE pull
+$COMPOSE up -d
 
-say "Done."
-echo "  rdna-dash doctor          check this box and list what is missing"
-echo "  rdna-dash                 open the dashboard on http://127.0.0.1:7860"
-echo "  rdna-dash --host 0.0.0.0  reach it from another machine (prints a token link)"
+i=0
+until curl -s -o /dev/null "http://127.0.0.1:$PORT/" 2>/dev/null; do
+    i=$((i + 1)); [ "$i" -gt 60 ] && die "The dashboard did not come up. Check: $COMPOSE logs"
+    sleep 1
+done
 
-if [ "$START" = 1 ]; then exec "$BIN/rdna-dash"; fi
+IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+[ -n "$IP" ] || IP="$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')"
+TOKEN="$(sed -n 's/^RDNA_DASH_TOKEN=//p' .env)"
+
+echo
+say "vllm-rdna-dash is running."
+echo "  Open:   http://${IP:-<this-box>}:$PORT   (from any machine on your network)"
+echo "  Token:  $TOKEN"
+echo "  Files:  $DATA   (settings in $DATA/.env)"
+echo "  Update: run this installer again.   Stop: cd $DATA && $COMPOSE down"

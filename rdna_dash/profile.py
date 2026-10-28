@@ -32,6 +32,11 @@ AMD_DEVICES = {
 
 COMMON_PORTS = [8000, 8008, 8888, 18094, 18096, 18097, 18105, 18210, 18300]
 
+# Running as the dashboard container: host facts come from mounts and the shared kernel.
+IN_CONTAINER = bool(os.environ.get("RDNA_DASH_IN_CONTAINER")) or os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
+HOST_ROOT = os.environ.get("RDNA_DASH_HOST_ROOT", "/host")
+FAMILY_PM = {"debian": "apt", "fedora": "dnf", "rhel": "dnf", "suse": "zypper", "arch": "pacman"}
+
 
 def _run(cmd, timeout=6):
     """Run a command, return stdout text or '' on any failure."""
@@ -62,17 +67,26 @@ def _int(path):
 
 def os_info():
     rel = {}
-    for line in _read("/etc/os-release").splitlines():
+    host_rel = os.path.join(HOST_ROOT, "etc", "os-release")
+    for line in _read(host_rel if IN_CONTAINER and os.path.exists(host_rel) else "/etc/os-release").splitlines():
         if "=" in line:
             k, v = line.split("=", 1)
             rel[k] = v.strip('"')
-    virt = _run(["systemd-detect-virt"]).strip() or "unknown"
+    virt = "unknown" if IN_CONTAINER else (_run(["systemd-detect-virt"]).strip() or "unknown")
+    if virt in ("unknown", "docker", "podman", "container-other"):
+        # The CPU's hypervisor flag is visible from containers too.
+        flags = next((l for l in _read("/proc/cpuinfo").splitlines() if l.startswith("flags")), "")
+        vendor = _read("/sys/class/dmi/id/sys_vendor").lower()
+        virt = ("kvm" if "qemu" in vendor or "kvm" in _read("/sys/class/dmi/id/product_name").lower() else "vm")             if " hypervisor" in flags else "none"
     cmdline = _read("/proc/cmdline")
     sb = _run(["mokutil", "--sb-state"]).strip().lower()
     selinux = _run(["getenforce"]).strip().lower() or "absent"
     pm = next((m for m in ("apt", "dnf", "zypper", "pacman") if shutil.which(m)), "unknown")
     like = (rel.get("ID", "") + " " + rel.get("ID_LIKE", "")).split()
     family = next((f for f in ("debian", "ubuntu", "fedora", "rhel", "suse", "arch") if f in like), rel.get("ID", ""))
+    if IN_CONTAINER:
+        pm = FAMILY_PM.get("debian" if family == "ubuntu" else family, "unknown")
+        selinux = "enforcing" if _read("/sys/fs/selinux/enforce") == "1" else selinux
     return {
         "name": rel.get("PRETTY_NAME") or platform.platform(),
         "id": rel.get("ID", ""),
@@ -265,10 +279,16 @@ def container_info():
                         "compose": _compose_cmd(engine) if ver else None, "vllm_rdna_images": images})
     usable = [e for e in engines if e["usable"]]
     best = (usable or engines or [None])[0]
+    # In the dashboard container the docker CLI may be talking to a Podman socket.
+    flavor = os.environ.get("RDNA_DASH_ENGINE", "")
+    if best and flavor.startswith("podman"):
+        best["flavor"] = "podman"
+        best["rootless"] = flavor == "podman-rootless"
     return {
         "installed": bool(engines),
         "usable": bool(usable),
         "engine": best["engine"] if best else None,
+        "flavor": (best.get("flavor") or best["engine"]) if best else None,
         "rootless": bool(best and best["rootless"]),
         "compose": best["compose"] if best else None,
         "vllm_rdna_images": best["vllm_rdna_images"] if best else [],
@@ -312,7 +332,8 @@ def collect(data_dir=None):
     home = os.path.expanduser("~")
     return {
         "schema": 1,
-        "hostname": socket.gethostname(),
+        "hostname": os.environ.get("RDNA_DASH_LABEL") or socket.gethostname(),
+        "runtime": {"container": IN_CONTAINER},
         "os": os_info(),
         "cpu": cpu_info(),
         "memory": mem_info(),

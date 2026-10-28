@@ -12,6 +12,12 @@ import re
 import shlex
 
 WIKI = "https://blivioniag.github.io/gfx1030-wiki/"
+RAW = "https://raw.githubusercontent.com/crispyging/vllm-rdna-dash/main/"
+
+
+def tool_cmd(name, args):
+    """Root helper command. Works without a checkout: fetches the script from the repo."""
+    return "curl -fsSL %stools/%s | sudo bash -s -- %s" % (RAW, name, args)
 AMD_INDEX = "https://repo.amd.com/rocm/whl-multi-arch/"
 BUILTIN_RECIPES = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "recipes")
 
@@ -169,7 +175,7 @@ def ecc_status(profile, chosen):
     errs = [(g["index"], g["ecc_errors"]) for g in pro if g.get("ecc_errors") and
             (g["ecc_errors"].get("ce", 0) or g["ecc_errors"].get("ue", 0))]
     hidden = [g for g in pro if 0 < (g["vram_gb"] or 0) < 31]
-    cmd = "sudo ./tools/ecc.sh %s"
+    cmd = "%s"
     if errs:
         detail = ("Card%s %s reported ECC errors (%s). Keep ECC on: the community advice is to stress-test the "
                   "card (Vulkan memtest, 5-8 minutes per GPU) and replace it if errors continue."
@@ -179,7 +185,7 @@ def ecc_status(profile, chosen):
                                    ["sudo dmesg | grep -iE 'ecc|ras|umc'"], "tuning/ecc.html")
     elif not hidden:
         state, c = "off", check("ecc", "ok", "ECC is off", "Full 32 GB visible on each Pro card.",
-                                [cmd % "on" + "   # to turn it back on (then reboot twice)"], "tuning/ecc.html")
+                                [tool_cmd("ecc.sh", "on") + "   # to turn it back on (then reboot twice)"], "tuning/ecc.html")
     elif param:
         state, c = "pending", check("ecc", "info", "ECC off is half done: reboot once more",
                                     "amdgpu.ras_enable=0 is set but the cards still show %.1f GB. The firmware "
@@ -190,7 +196,7 @@ def ecc_status(profile, chosen):
                                "%.1f GB visible of 32 GB. With ECC off each card gets ~2 GB more KV cache, which the "
                                "community runs by default. No ECC errors are reported right now; stress-test first if the "
                                "cards are second-hand." % hidden[0]["vram_gb"],
-                               [cmd % "off", "sudo reboot   # first reboot arms it", "sudo reboot   # second reboot applies it"],
+                               [tool_cmd("ecc.sh", "off"), "sudo reboot   # first reboot arms it", "sudo reboot   # second reboot applies it"],
                                "tuning/ecc.html")
     c["action"] = "ecc"
     return {"state": state, "check": c}
@@ -208,9 +214,9 @@ def power_status(chosen):
     if not high:
         return {"state": "ok", "check": check("power", "ok", "Power capped at %d W" % max(g["power_cap_w"] for g in v620),
                                               "Cooler, quieter cards with little speed loss on memory-bound inference.",
-                                              ["sudo ./tools/power.sh status"], "tuning/power.html")}
+                                              [tool_cmd("power.sh", "status")], "tuning/power.html")}
     floor = max((g.get("power_cap_min_w") or 0) for g in v620)
-    cmd = ["sudo ./tools/power.sh %d --persist   # applies now and at every boot" % POWER_TARGET_W]
+    cmd = [tool_cmd("power.sh", "%d --persist") % POWER_TARGET_W + "   # applies now and at every boot"]
     detail = ("Cards are at %d W. Inference is memory-bound, so the community caps V620s at %d W: much cooler "
               "and quieter for little speed loss." % (high[0]["power_cap_w"], POWER_TARGET_W))
     if floor > POWER_TARGET_W:
@@ -226,7 +232,7 @@ def default_prefs():
         "recipe": "auto",        # registry id, or auto
         "path": "auto",          # auto | container | venv
         "gpus": None,            # sysfs indices, or None for auto
-        "root": os.path.expanduser("~/vllm-rdna"),
+        "root": os.environ.get("RDNA_DASH_ROOT") or os.path.expanduser("~/vllm-rdna"),
         "port": None,
         "max_len": None,
         "lan": False,            # bind the model server on all interfaces
@@ -240,6 +246,8 @@ def path_blockers(path, profile):
     rocm, cont, tools = profile.get("rocm", {}), profile.get("container", {}), profile.get("tools", {})
     if path == "container":
         return [] if cont.get("usable") else ["no usable Docker or Podman"]
+    if profile.get("runtime", {}).get("container"):
+        return ["dashboard runs in a container"]
     out = []
     if not tools.get("git"):
         out.append("git missing")
@@ -299,14 +307,30 @@ def build_plan(profile, prefs=None, registry=None):
             fix.insert(0, "# Secure Boot is on: a DKMS amdgpu module must be signed, or disable Secure Boot")
         checks.append(check("amdgpu", "fail", "amdgpu kernel driver not loaded",
                             "ROCm needs the amdgpu module loaded.", fix, "setup/installing-rocm.html"))
-    if not acc.get("kfd_exists"):
+    in_ctr = profile.get("runtime", {}).get("container")
+    if not acc.get("kfd_exists") and in_ctr:
+        checks.append(check("kfd", "fail", "The dashboard container cannot see /dev/kfd",
+                            "Either the host has no ROCm driver yet, or the dashboard's compose file does not pass the GPU "
+                            "devices through. Check on the host, and keep devices: [/dev/kfd, /dev/dri] in the dashboard compose.yml.",
+                            ["ls -l /dev/kfd /dev/dri   # on the host"] +
+                            ROCM_HINT.get(family, ["# follow AMD's ROCm install guide for your distro"]),
+                            "setup/installing-rocm.html"))
+    elif not acc.get("kfd_exists"):
         checks.append(check("kfd", "fail", "/dev/kfd is missing",
                             "The ROCm compute device does not exist, so nothing can use the GPU. Install the ROCm "
                             "driver stack for your distro and reboot.",
                             ROCM_HINT.get(family, ["# follow AMD's ROCm install guide for your distro"]) + ["sudo reboot"],
                             "setup/installing-rocm.html"))
     missing = [g for g in ("video", "render") if not acc.get("in_" + g)]
-    if missing:
+    if in_ctr:
+        if acc.get("kfd_exists") and acc.get("kfd_rw"):
+            checks.append(check("access", "ok", "GPU access rights", "The dashboard container can open /dev/kfd and the render nodes."))
+        elif acc.get("kfd_exists"):
+            checks.append(check("kfd-perm", "fail", "The dashboard container cannot open /dev/kfd",
+                                "Keep group_add: [video, render] in the dashboard compose.yml (rootless Podman: [keep-groups]) and "
+                                "security_opt label=disable on SELinux hosts, then recreate the container.",
+                                ["docker compose up -d --force-recreate"], "troubleshooting/vllm.html#failed-to-infer-device-type--amdsmi_status_not_init"))
+    elif missing:
         checks.append(check("groups", "fail", "Not in the %s group%s" % (" and ".join(missing), "s" if len(missing) > 1 else ""),
                             "Without both video and render, vLLM fails with `Failed to infer device type` or "
                             "AMDSMI_STATUS_NOT_INIT. Log out and back in after adding them.",
@@ -320,7 +344,9 @@ def build_plan(profile, prefs=None, registry=None):
         checks.append(check("access", "ok", "GPU access rights", "In video and render; /dev/kfd is usable."))
 
     rv = rocm.get("primary", "")
-    if rv:
+    if in_ctr:
+        pass  # the vLLM image brings ROCm 7.14; the host's userspace is not visible from here
+    elif rv:
         lvl, msg = "ok", "ROCm %s userspace at %s." % (rv, ", ".join(sorted(rocm.get("installs", {}))) or "?")
         if n > 1 and bad_rccl_rocm(rv):
             lvl = "warn"
@@ -377,6 +403,11 @@ def build_plan(profile, prefs=None, registry=None):
                                 "Using %s instead." % ("the host venv" if "venv" in pick["paths"] else "a container")))
         pref = r.get("prefer", pick["paths"][0])
         path = pref if pref in pick["feasible"] or not pick["feasible"] else pick["feasible"][0]
+    if path == "venv" and profile.get("runtime", {}).get("container") and "container" in pick["feasible"]:
+        checks.append(check("path", "info", "Serving in a container",
+                            "This dashboard runs in a container, so it cannot build the fork on the host. Using the "
+                            "container image instead."))
+        path = "container"
     for b in path_blockers(path, profile):
         if b == "no usable Docker or Podman":
             if not cont.get("installed"):
@@ -389,17 +420,21 @@ def build_plan(profile, prefs=None, registry=None):
                                     ['sudo usermod -aG docker "$USER"', "# then log out and back in"]))
         elif b == "git missing":
             checks.append(check("git", "fail", "git is missing", "The fork is cloned with git.", [pkg_install(pm, "git")]))
+        elif b == "dashboard runs in a container":
+            checks.append(check("venv-ctr", "fail", "Host builds are not available from the dashboard container",
+                                "This dashboard runs in a container, so it serves models in containers too. Switch the "
+                                "install path to Container, or run rdna-dash directly on the host to build the fork."))
         elif b == "no hipcc":
             checks.append(check("hipcc", "fail", "No hipcc to build the fork",
                                 "The host venv compiles the fork's HIP kernels and needs hipcc from a ROCm 7.14 SDK "
                                 "(the launcher looks in /opt/rocm/core-7.14). The container path needs none of this.",
                                 ROCM_HINT.get(family), "vllm/host-venv.html"))
     if path == "container" and cont.get("usable"):
-        eng = cont.get("engine")
+        eng = cont.get("flavor") or cont.get("engine")
         detail = "%s%s." % (eng.capitalize(), " (rootless)" if cont.get("rootless") else "")
         if not cont.get("compose"):
             checks.append(check("compose", "warn", "No compose front end for %s" % eng,
-                                "The plan writes compose.yml; install %s to run it, or use the plain run command shown." %
+                                "The plan writes vllm-compose.yml; install %s to run it, or use the plain run command shown." %
                                 ("docker compose" if eng == "docker" else "podman-compose"),
                                 [pkg_install(pm, "docker-compose-v2" if eng == "docker" and pm == "apt" else
                                              ("docker-compose" if eng == "docker" else "podman-compose"))]))
@@ -419,7 +454,7 @@ def build_plan(profile, prefs=None, registry=None):
     multi = use > 1
 
     settings.append(setting("Recipe", r["label"], r.get("summary", "")))
-    settings.append(setting("Install path", "Container (%s)" % (cont.get("engine") or "docker") if path == "container"
+    settings.append(setting("Install path", "Container (%s)" % (cont.get("flavor") or cont.get("engine") or "docker") if path == "container"
                             else "Host venv + fork checkout",
                             "Fastest first serve; no build." if path == "container"
                             else "HEAD kernels and the in-tree tuned launcher (serve_rdna.sh %s)." % r["venv"]["recipe"]))
@@ -492,7 +527,10 @@ def build_plan(profile, prefs=None, registry=None):
     root = os.path.expanduser(p["root"])
     paths = {"root": root, "venv": os.path.join(root, "venv-7.14.0"), "src": os.path.join(root, "vllm-rdna"),
              "models": os.path.join(root, "models"), "cache": os.path.join(root, "cache"),
-             "compose": os.path.join(root, "compose.yml")}
+             "compose": os.path.join(root, "vllm-compose.yml"),
+             # In the dashboard container ~ is the container's; keep everything under the shared data dir.
+             "hf_cache": os.path.join(root, "hf-cache") if profile.get("runtime", {}).get("container")
+             else os.path.expanduser("~/.cache/huggingface")}
     m = r["model"]
     model_dir = os.path.join(paths["models"], m["dir"])
     ple_dir = os.path.join(paths["models"], r["ple"]["dir"], r["ple"]["subdir"]) if ple else None
@@ -556,7 +594,7 @@ def container_spec(reg, paths, r, used, tp, port, host, served, max_len, p2p, hs
     if p2p is False:
         env["NCCL_P2P_DISABLE"] = "1"
         env["VLLM_RDNA_AR"] = "0"
-    vols = ["%s:/root/.cache/huggingface" % os.path.expanduser("~/.cache/huggingface"),
+    vols = ["%s:/root/.cache/huggingface" % paths["hf_cache"],
             "%s:/root/.triton/cache" % os.path.join(paths["cache"], "triton"),
             "%s:/root/.cache/vllm" % os.path.join(paths["cache"], "vllm")]
     ccfg = r.get("container", {})
@@ -706,15 +744,22 @@ def build_steps(reg, path, r, multi, paths, model_dir, ple, rocm_home, launch, c
         steps.append({"id": "pull", "kind": "run", "title": "Pull the vllm-rdna image",
                       "summary": "Hub bake of rdna_extras: ROCm 7.14, torch 2.12, Triton 3.7.1.",
                       "script": "%s pull %s" % (eng, reg["image"])})
-        inner = "hf download %s%s --local-dir /models/%s" % (m["repo"], rev, m["dir"])
+        mounted = r.get("container", {}).get("mount_model")
+        # Download to where the server reads: a mounted folder, or the HF cache it serves the repo id from.
+        if mounted:
+            inner = "hf download %s%s --local-dir /models/%s" % (m["repo"], rev, m["dir"])
+        else:
+            inner = "hf download %s%s" % (m["repo"], rev)
         if ple:
             inner += " && hf download %s --include '%s/*' --local-dir /models/%s" % (r["ple"]["repo"], r["ple"]["subdir"], r["ple"]["dir"])
         tok = " -e HF_TOKEN"  # passes the caller's token through only when it is set
         steps.append({"id": "model", "kind": "run", "title": "Download the model",
-                      "summary": "%s from Hugging Face into %s, using the image's own hf CLI." % (m["repo"], paths["models"]),
-                      "script": "mkdir -p %s\n%s run --rm%s --security-opt label=disable -v %s:/models %s bash -lc %s"
-                                % (q(paths["models"]), eng, tok, q(paths["models"]), reg["image"], q(inner))})
-        steps.append({"id": "compose", "kind": "write", "title": "Write compose.yml",
+                      "summary": "%s from Hugging Face into %s, using the image's own hf CLI."
+                                 % (m["repo"], paths["models"] if mounted else paths["hf_cache"]),
+                      "script": "mkdir -p %s %s\n%s run --rm%s --security-opt label=disable -v %s:/models -v %s:/root/.cache/huggingface %s bash -lc %s"
+                                % (q(paths["models"]), q(paths["hf_cache"]), eng, tok, q(paths["models"]), q(paths["hf_cache"]),
+                                   reg["image"], q(inner))})
+        steps.append({"id": "compose", "kind": "write", "title": "Write the vLLM compose file",
                       "summary": "Saves the tuned service to %s so you can also run it by hand with compose." % paths["compose"]})
     else:
         uv = '"$(command -v uv || echo "$HOME/.local/bin/uv")"'

@@ -130,6 +130,34 @@ class TuningTest(unittest.TestCase):
         self.assertEqual(levels(p)["power"], "ok")
         self.assertEqual([s for s in p["steps"] if s["id"] == "tune"][0]["pending"], [])
 
+    def test_container_mode_serves_in_containers(self):
+        prof = copy.deepcopy(self.base)
+        prof["runtime"] = {"container": True}
+        prof["access"].update(in_video=False, in_render=False)  # container groups say nothing about the host
+        p = plan(prof, {"root": "/srv/vllm-rdna"})
+        self.assertEqual(p["choice"]["path"], "container")
+        self.assertEqual(p["choice"]["recipe_id"], "flashnext-awq-mtp2")
+        self.assertNotIn("groups", levels(p))
+        self.assertEqual(p["verdict"], "ready")
+        self.assertEqual(p["paths"]["hf_cache"], os.path.join("/srv/vllm-rdna", "hf-cache"))
+        self.assertTrue(p["paths"]["compose"].endswith("vllm-compose.yml"))
+        self.assertTrue(all(v.split(":")[0].startswith("/srv/vllm-rdna") for v in p["launch"]["spec"]["volumes"]))
+        ecc = [c for c in p["checks"] if c["id"] == "ecc"][0]
+        self.assertIn("raw.githubusercontent.com", ecc["fix"][0])
+        p = plan(prof, {"path": "venv", "recipe": "qwen38-27b-awq"})
+        self.assertEqual(p["choice"]["path"], "container")
+        three = copy.deepcopy(prof)
+        three["gpus"] = three["gpus"][:3]
+        self.assertEqual(plan(three)["choice"]["recipe_id"], "qwen38-27b-awq")  # PP3 needs a host build
+
+    def test_container_mode_model_download_lands_where_server_reads(self):
+        prof = copy.deepcopy(self.base)
+        prof["runtime"] = {"container": True}
+        p = plan(prof, {"root": "/srv/vllm-rdna", "recipe": "qwen38-27b-awq"})
+        step = [s for s in p["steps"] if s["id"] == "model"][0]
+        self.assertIn(os.path.join("/srv/vllm-rdna", "hf-cache") + "':/root/.cache/huggingface", step["script"])
+        self.assertNotIn("--local-dir", step["script"])
+
     def test_step_scripts_never_use_sudo(self):
         for prefs in ({}, {"recipe": "qwen38-27b-awq"}, {"path": "venv", "recipe": "qwen38-27b-awq"}):
             for s in plan(self.base, prefs)["steps"]:

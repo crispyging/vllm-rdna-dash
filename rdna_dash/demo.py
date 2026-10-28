@@ -55,7 +55,7 @@ def demo_topology():
         sw_up = "0000:%02x:00.0" % (1 if i < 2 else 0x41)
         sw_dn = "0000:%02x:%02x.0" % ((2 if i < 2 else 0x42), (i % 2) * 8)
         devs.append({"index": i, "pci": "0000:%s:00.0" % bus, "name": "Radeon PRO V620", "root": root,
-                     "numa": "0" if i < 2 else "1",
+                     "numa": "0" if i < 2 else "1", "socket": 0 if i < 2 else 1,
                      "bridges": [{"addr": rp, "kind": "root-port", "vendor_name": "AMD"},
                                  {"addr": sw_up, "kind": "switch", "vendor_name": "Broadcom/PLX"},
                                  {"addr": sw_dn, "kind": "switch", "vendor_name": "Broadcom/PLX"},
@@ -69,7 +69,7 @@ def demo_topology():
             pairs.append({"a": i, "b": j, "via": "switch" if same else "cpu-interconnect",
                           "meet": "0000:%02x:00.0" % (1 if i < 2 else 0x41) if same else None,
                           "hops": 2 if same else 6, "middlemen": [], "kfd_p2p": True, "kfd_weight": 15 if same else 52})
-    return {"gpus": devs, "pairs": pairs,
+    return {"gpus": devs, "pairs": pairs, "sockets": {"count": 2, "model": "AMD EPYC 7452 32-Core Processor"},
             "switches": [{"addr": "0000:01:00.0", "vendor": "Broadcom/PLX", "gpus": [0, 1]},
                          {"addr": "0000:41:00.0", "vendor": "Broadcom/PLX", "gpus": [2, 3]}],
             "kfd": True, "kfd_p2p_supported": True,
@@ -140,6 +140,8 @@ class FakeVllm(object):
                             "vllm:e2e_request_latency_seconds_count %d" % c["e2e_n"],
                             "vllm:request_success_total %d" % c["done"],
                             "vllm:prefix_cache_hits_total %f" % c["pc_hit"], "vllm:prefix_cache_queries_total %f" % c["pc_q"],
+                            "vllm:external_prefix_cache_hits_total %f" % (c["pc_q"] * 0.04),
+                            "vllm:external_prefix_cache_queries_total %f" % (c["pc_q"] * 0.9),
                             "vllm:spec_decode_num_accepted_tokens_total %f" % c["sd_acc"],
                             "vllm:spec_decode_num_draft_tokens_total %f" % c["sd_draft"]]) + "\n"
                         b = body.encode()

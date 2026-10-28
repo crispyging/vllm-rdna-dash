@@ -10,7 +10,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from rdna_dash import bench, demo, logdoctor, server, telemetry, tuning  # noqa: E402
+from rdna_dash import bench, demo, logdoctor, server, telemetry, topology, tuning  # noqa: E402
 
 REG = tuning.load_registry([tuning.BUILTIN_RECIPES])
 
@@ -278,6 +278,38 @@ class DownloadTest(unittest.TestCase):
             self.assertEqual(lim.current(), 0.0)
 
 
+class TopologyTest(unittest.TestCase):
+    def test_bar_ignores_sriov_vf_ranges(self):
+        # BAR0 32 GiB VRAM, BAR2 256 MiB, BAR5 regs, ROM, then VF BARs (12 VFs x 32 GiB = 384 GiB).
+        lines = ["0x0000038000000000 0x00000387ffffffff 0x14220c", "0x0 0x0 0x0",
+                 "0x0000038800000000 0x000003880fffffff 0x14220c", "0x0 0x0 0x0", "0x0 0x0 0x0",
+                 "0x00000000f0000000 0x00000000f00fffff 0x40200", "0x00000000f0100000 0x00000000f011ffff 0x46200",
+                 "0x0000039000000000 0x000003efffffffff 0x14220c"] + ["0x0 0x0 0x0"] * 5
+        old = topology._read
+        topology._read = lambda path, default="": chr(10).join(lines) if path.endswith("/resource") else old(path, default)
+        try:
+            self.assertEqual(topology._large_bar("0000:03:00.0"), 32.0)
+        finally:
+            topology._read = old
+
+    def _dev(self, i, root, socket):
+        return {"index": i, "root": root, "socket": socket, "numa": str(i), "bridges": [
+            {"addr": root + "-rp%d" % i, "kind": "root-port"}], "kfd_node": None}
+
+    def test_one_cpu_many_root_complexes_is_not_cross_socket(self):
+        sk = {"count": 1, "node_package": {}, "model": "AMD Ryzen Threadripper PRO 3945WX 12-Cores"}
+        self.assertEqual(topology.socket_of("3", sk), 0)
+        a, b = self._dev(0, "pci0000:00", 0), self._dev(1, "pci0000:20", 0)
+        self.assertEqual(topology._pair(a, b, {})["via"], "cpu-fabric")
+
+    def test_two_sockets_is_cross_socket(self):
+        sk = {"count": 2, "node_package": {"0": 0, "1": 0, "2": 1, "3": 1}, "model": "x"}
+        self.assertEqual(topology.socket_of("1", sk), 0)
+        self.assertEqual(topology.socket_of("2", sk), 1)
+        a, b = self._dev(0, "pci0000:00", 0), self._dev(1, "pci0000:80", 1)
+        self.assertEqual(topology._pair(a, b, {})["via"], "cpu-interconnect")
+
+
 class HostGuardTest(unittest.TestCase):
     def test_allows_ips_and_local_names_only(self):
         ok = ["192.168.1.20:7860", "10.0.0.5", "[::1]:7860", "localhost:7860", "gpu-box", "gpu-box:7860",
@@ -323,6 +355,11 @@ class DoctorTest(unittest.TestCase):
 
 
 class PromTest(unittest.TestCase):
+    def test_offload_and_external_hits(self):
+        m = telemetry.parse_prom("vllm:kv_cache_usage_perc 0.2\nvllm:cpu_kv_offload_usage_perc 0.35\n")
+        self.assertAlmostEqual(telemetry.offload_usage(m), 35.0)
+        self.assertIsNone(telemetry.offload_usage(telemetry.parse_prom("vllm:kv_cache_usage_perc 0.2\n")))
+
     def test_parse_sums_labels(self):
         m = telemetry.parse_prom('# HELP x\nvllm:num_requests_running{a="1"} 2\nvllm:num_requests_running{a="2"} 3\nvllm:x_total 1e3\n')
         self.assertEqual(m["vllm:num_requests_running"], 5)

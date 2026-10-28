@@ -104,11 +104,55 @@ def kfd_nodes():
     return out
 
 
+def _cpus(cpulist):
+    out = []
+    for part in (cpulist or "").split(","):
+        part = part.strip()
+        if "-" in part:
+            a, b = part.split("-", 1)
+            out += list(range(int(a), int(b) + 1))
+        elif part.isdigit():
+            out.append(int(part))
+    return out
+
+
+def sockets():
+    """NUMA node -> physical CPU package, and the package count.
+
+    A NUMA node is not a socket: EPYC/Threadripper in NPS2/NPS4 show several nodes on
+    one CPU, and every CPU has several PCIe root complexes. The package id is the truth."""
+    packages = set()
+    for p in glob.glob("/sys/devices/system/cpu/cpu[0-9]*/topology/physical_package_id"):
+        v = _read(p)
+        if v.lstrip("-").isdigit():
+            packages.add(int(v))
+    node_pkg = {}
+    for nd in glob.glob("/sys/devices/system/node/node[0-9]*"):
+        cpus = _cpus(_read(nd + "/cpulist"))
+        if cpus:
+            v = _read("/sys/devices/system/cpu/cpu%d/topology/physical_package_id" % cpus[0])
+            if v.lstrip("-").isdigit():
+                node_pkg[os.path.basename(nd)[4:]] = int(v)
+    model = ""
+    for line in _read("/proc/cpuinfo").splitlines():
+        if line.startswith("model name"):
+            model = line.split(":", 1)[1].strip()
+            break
+    return {"count": len(packages) or 1, "node_package": node_pkg, "model": model}
+
+
+def socket_of(numa, sk):
+    if sk["count"] <= 1:
+        return 0
+    return sk["node_package"].get(str(numa))
+
+
 def discover(gpus):
     """Topology for the given profile GPUs (discrete only)."""
     cards = [g for g in gpus if not g.get("integrated")]
     nodes = kfd_nodes()
     by_pci = {v["pci"]: k for k, v in nodes.items()}
+    sk = sockets()
     devs = []
     for g in cards:
         root, bridges = gpu_path(g["pci"])
@@ -117,6 +161,7 @@ def discover(gpus):
         devs.append({
             "index": g["index"], "pci": g["pci"], "name": g["name"], "root": root,
             "numa": _read(_dev(g["pci"]) + "/numa_node", "-1"),
+            "socket": socket_of(_read(_dev(g["pci"]) + "/numa_node", "-1"), sk),
             "bridges": bridges, "link": _link(slot), "kfd_node": by_pci.get(g["pci"]),
             "large_bar": _large_bar(g["pci"]),
         })
@@ -131,15 +176,19 @@ def discover(gpus):
                 switches.setdefault(br["addr"], {"addr": br["addr"], "vendor": br["vendor_name"], "gpus": []})
                 switches[br["addr"]]["gpus"].append(d["index"])
     return {"gpus": devs, "pairs": pairs, "switches": list(switches.values()),
+            "sockets": {"count": sk["count"], "model": sk["model"]},
             "kfd": bool(nodes), "kfd_p2p_supported": any(n["has_p2p_dir"] for n in nodes.values()),
             "tools": {"rocm_bandwidth_test": bandwidth_tool(), "amd_smi": shutil.which("amd-smi"),
                       "rocm_smi": shutil.which("rocm-smi")}}
 
 
 def _large_bar(addr):
-    """Resizable/large BAR: the VRAM BAR covers (nearly) all of VRAM."""
+    """Resizable/large BAR: the VRAM BAR covers (nearly) all of VRAM.
+
+    Only BAR0-BAR5 count. The resource file goes on with the expansion ROM and, on
+    SR-IOV cards like the V620, the VF BARs, whose size is per-VF size x VF count."""
     best = 0
-    for line in _read(_dev(addr) + "/resource").splitlines():
+    for line in _read(_dev(addr) + "/resource").splitlines()[:6]:
         try:
             s, e, _ = (int(x, 16) for x in line.split())
             best = max(best, e - s + 1 if e else 0)
@@ -159,7 +208,8 @@ def _pair(a, b, nodes):
     up_a = [x for x in a["bridges"][common:] if x["kind"] != "on-card"]
     up_b = [x for x in b["bridges"][common:] if x["kind"] != "on-card"]
     if a["root"] != b["root"]:
-        via = "cpu-interconnect" if a["numa"] != b["numa"] and a["numa"] != "-1" else "cpu-root-complex"
+        cross = a.get("socket") is not None and b.get("socket") is not None and a["socket"] != b["socket"]
+        via = "cpu-interconnect" if cross else "cpu-fabric"  # fabric: same CPU, different root complexes
         meet = None
     elif common == 0:
         via, meet = "cpu-root-complex", None

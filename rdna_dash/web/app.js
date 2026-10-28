@@ -411,6 +411,16 @@ function renderDash() {
   }
   const ss = S.server, lat = (T && T.latest) || {}, srv = lat.server || {}, hist = (T && T.server) || [];
   const tail = (k) => hist.slice(-60).map((s) => s[k]);
+  // Bursty numbers (prefill, first token, hit rates) are 0 or empty between requests. Show the
+  // last real value while idle, and a 1-minute average of the busy moments under it.
+  const lastReal = (key) => { for (let i = hist.length - 1; i >= 0; i--) { const v = hist[i][key]; if (v != null && v > 0) return [v, hist[i].t]; } return [null, null]; };
+  const busyAvg = (key) => { const now = Date.now() / 1000; const v = hist.filter((s) => s.t > now - 60 && s[key] != null && s[key] > 0).map((s) => s[key]); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null; };
+  const live = (key, d, unit) => {
+    const cur = srv[key];
+    if (cur != null && cur > 0) { const a = busyAvg(key); return { v: cur, note: a != null ? `1-min avg ${fmt(a, d)}${unit}` : null, idle: false }; }
+    const [v, t] = lastReal(key);
+    return v == null ? { v: cur, note: null, idle: false } : { v, note: `idle · last ${ago(t)} ago`, idle: true };
+  };
   const word = { up: "Serving", starting: "Starting", crashed: "Stopped", stopped: "Off" }[ss.state];
   const dot = { up: "ok", starting: "run", crashed: "fail", stopped: "idle" }[ss.state];
   const model = (S.smoke && S.smoke.models && S.smoke.models[0]) || S.plan.choice.served_name || S.plan.choice.recipe_label;
@@ -426,7 +436,7 @@ function renderDash() {
   if (!hero.dataset.built) {
     hero.innerHTML = `<div class="panel hero-panel"><div class="hero-l"><div id="dh-state"></div><h1 class="punch${slamOnce("dash")}" id="dh-word"></h1><p class="hero-sub" id="dh-sub"></p>
         <div class="row" id="dh-meta"></div></div>
-      <div class="hero-r"><div class="eyebrow">Output speed ${info("tps")}</div><div class="hero-num"><span data-k="kpi-gen">–</span><small>tok/s</small></div><div id="dh-spark"></div></div></div>
+      <div class="hero-r"><div class="eyebrow">Output speed ${info("tps")}</div><div class="hero-num"><span data-k="kpi-gen">–</span><small>tok/s</small></div><div class="hero-note" id="dh-gen-note"></div><div id="dh-spark"></div></div></div>
       <div id="dh-attach"></div>`;
     hero.dataset.built = "1";
   }
@@ -435,18 +445,24 @@ function renderDash() {
   patch($("#dh-sub"), sub);
   const pub = publicUrl();
   patch($("#dh-meta"), `<span class="chip mono">${esc(pub)}</span><button class="ghost small" data-copy="${esc(pub)}">Copy URL</button>${shareNote()}`);
-  countTo($('[data-k="kpi-gen"]'), srv.gen_tps, 1);
+  const G = live("gen_tps", 1, " tok/s");
+  countTo($('[data-k="kpi-gen"]'), G.v, 1);
+  const gn = $('[data-k="kpi-gen"]'); if (gn) gn.parentElement.classList.toggle("idle", G.idle);
+  patch($("#dh-gen-note"), G.note ? esc(G.note) : "");
   patch($("#dh-spark"), spark(tail("gen_tps"), "var(--key)", 44));
   patch($("#dh-attach"), ss.state !== "up" && !ss.attached ? `<details class="attach"><summary>Already running vLLM yourself? Watch that server instead</summary><div class="row" style="margin-top:10px"><input id="attach-url" class="in" placeholder="http://127.0.0.1:8000/v1"><button class="ghost" data-act="attach">Watch it</button></div></details>` : "");
   patch($("#d-problems"), ss.problems && ss.problems.length ? `<div class="panel warn-panel"><div class="eyebrow">Problems found in the log</div>${ss.problems.map(problemRow).join("")}</div>` : "");
 
+  const ext = srv.ext_prefix_hit != null ? ` · ${fmt(srv.ext_prefix_hit)}% external` : (lastReal("ext_prefix_hit")[0] != null ? ` · ${fmt(lastReal("ext_prefix_hit")[0])}% external` : "");
+  const kvNote = srv.kv_offload_usage != null ? `GPU · ${fmt(srv.kv_offload_usage)}% offloaded cache in use` : "of GPU cache in use";
+  const L = { prompt: live("prompt_tps", 0, " tok/s"), ttft: live("ttft", 2, " s"), pc: live("prefix_hit", 0, "%"), sd: live("spec_accept", 0, "%") };
   const tiles = [
-    ["prompt", "Prompt reading", "tok/s", srv.prompt_tps, 0, "prefill", "prompt_tps", "var(--s3)", "Prefill, all users"],
-    ["run", "Active requests", "", srv.running, 0, null, "running", "var(--s1)", `${fmt(srv.waiting)} waiting in line`],
-    ["ttft", "First token", "s", srv.ttft, 2, "ttft", "ttft", "var(--s1)", "Average, last few seconds"],
-    ["kv", "KV cache", "%", srv.kv_usage, 0, "kv", "kv_usage", "var(--s3)", "of GPU cache in use"],
-    ["pc", "Prefix cache hits", "%", srv.prefix_hit, 0, "prefix", "prefix_hit", "var(--s1)", "Reused prompt work"],
-    ["sd", "Draft accepted", "%", srv.spec_accept, 0, "spec", "spec_accept", "var(--s3)", "MTP drafts kept"],
+    ["prompt", "Prompt reading", "tok/s", L.prompt.v, 0, "prefill", "prompt_tps", "var(--s3)", L.prompt.note || "Prefill, all users", L.prompt.idle],
+    ["run", "Active requests", "", srv.running, 0, null, "running", "var(--s1)", `${fmt(srv.waiting)} waiting in line`, false],
+    ["ttft", "First token", "s", L.ttft.v, 2, "ttft", "ttft", "var(--s1)", L.ttft.note || "Average of recent requests", L.ttft.idle],
+    ["kv", "KV cache", "%", srv.kv_usage, 0, "kv", "kv_usage", "var(--s3)", kvNote, false],
+    ["pc", "Prefix cache hits", "%", L.pc.v, 0, "prefix", "prefix_hit", "var(--s1)", (L.pc.note || "Reused prompt work") + ext, L.pc.idle],
+    ["sd", "Draft accepted", "%", L.sd.v, 0, "spec", "spec_accept", "var(--s3)", L.sd.note || "MTP drafts kept", L.sd.idle],
   ];
   const tl = $("#d-tiles");
   if (!tl.dataset.built) {
@@ -454,8 +470,9 @@ function renderDash() {
       <div class="tile-n"><span data-k="kpi-${id}">–</span><small>${u}</small></div><div class="tile-s" id="ts-${id}"></div><div class="tile-sp" id="tp-${id}"></div></div>`).join("");
     tl.dataset.built = "1";
   }
-  for (const [id, , , v, d, , key, color, note] of tiles) {
+  for (const [id, , , v, d, , key, color, note, idle] of tiles) {
     countTo($(`[data-k="kpi-${id}"]`), v, d);
+    const n = $(`[data-k="kpi-${id}"]`); if (n) n.parentElement.classList.toggle("idle", !!idle);
     patch($("#ts-" + id), esc(note));
     patch($("#tp-" + id), spark(tail(key), color));
   }
@@ -667,12 +684,13 @@ function renderTopo() {
   patch($("#t-job"), job != null ? `<div class="sec"><h2>Measuring</h2><div class="log" data-k="topo">${esc(job || "Starting…")}</div></div>` : "");
   patch($("#t-p2p"), S ? p2pPanel(TP) : "");
   patch($("#t-map"), `<div class="sec"><h2>PCIe map</h2>${topoSvg(TP)}</div>`);
-  const viaTxt = { switch: "Shared PCIe switch", "cpu-root-complex": "Through the CPU", "cpu-interconnect": "Across CPU sockets" };
+  const viaTxt = { switch: "Shared PCIe switch", "cpu-root-complex": "Through one CPU root complex",
+    "cpu-fabric": "Same CPU, different root complex", "cpu-interconnect": "Across CPU sockets" };
   patch($("#t-pairs"), TP.pairs.length ? `<div class="sec"><h2>Every pair</h2><div class="scroll-x"><table class="t"><thead><tr><th>Pair</th><th>Path</th><th class="num">${term("Hops", "hops")}</th><th>Driver P2P link</th><th class="num">Measured</th></tr></thead><tbody>
     ${TP.pairs.map((p) => { const bw = TP.bandwidth && TP.bandwidth.gbs ? TP.bandwidth.gbs[p.a] && TP.bandwidth.gbs[p.a][p.b] : null;
       return `<tr><td><b>GPU ${p.a} ↔ GPU ${p.b}</b></td><td>${esc(viaTxt[p.via] || p.via)}${p.meet ? ` <span class="muted mono">${esc(p.meet)}</span>` : ""}</td><td class="num">${p.hops}</td>
       <td>${p.kfd_p2p == null ? `<span class="muted">unknown</span>` : p.kfd_p2p ? pill("ok", "Enabled") : pill("warn", "Not enabled")}</td><td class="num">${bw == null ? "–" : fmt(bw, 1) + " GB/s"}</td></tr>`; }).join("")}</tbody></table></div>
-    <p class="muted">Pairs behind the same switch can usually copy directly. Crossing CPU sockets is the slowest path; keep tensor-parallel groups on one socket when you can.</p></div>` : "");
+    <p class="muted">Pairs behind the same switch can usually copy directly. Pairs on different root complexes of the same CPU go through its I/O die. ${(TP.sockets || {}).count > 1 ? "Crossing CPU sockets is the slowest path; keep tensor-parallel groups on one socket when you can." : ""}</p></div>` : "");
   const bw = TP.bandwidth;
   if (bw && bw.gbs) {
     const n = bw.devices; const max = Math.max(...bw.gbs.flat().filter((x) => x != null), ...(bw.h2d || []));
@@ -716,38 +734,53 @@ function p2pPanel(tp) {
 }
 function topoSvg(tp) {
   const gpus = tp.gpus; if (!gpus.length) return `<p class="empty">No GPUs to map.</p>`;
-  const roots = [...new Set(gpus.map((g) => g.root))];
-  const W = Math.max(640, gpus.length * 150), H = 330, colW = W / gpus.length;
+  const W = Math.max(640, gpus.length * 150), H = 400, colW = W / gpus.length;
   const gx = (i) => colW * i + colW / 2;
+  const span = (idx) => [Math.min(...idx.map(gx)) - colW / 2 + 8, Math.max(...idx.map(gx)) + colW / 2 - 8];
+  const nSock = (tp.sockets && tp.sockets.count) || 1;
+  const sockOf = (g) => (g.socket == null ? 0 : g.socket);
   let s = "";
+  // Sockets: one box per physical CPU, spanning its GPUs.
+  const socks = [...new Set(gpus.map(sockOf))];
+  socks.forEach((k) => {
+    const idx = gpus.map((g, i) => (sockOf(g) === k ? i : -1)).filter((i) => i >= 0);
+    const [x0, x1] = span(idx);
+    const name = (tp.sockets && tp.sockets.model) || "CPU";
+    s += `<rect x="${x0}" y="10" width="${x1 - x0}" height="132" rx="12" fill="var(--bg-3)" fill-opacity=".55" stroke="var(--line-2)"/>
+      <text x="${x0 + 14}" y="32">${nSock > 1 ? "CPU socket " + k : "CPU"}</text><text class="sub" x="${x0 + 14}" y="48">${esc(name)}</text>`;
+  });
+  // Root complexes inside the socket.
+  const roots = [...new Set(gpus.map((g) => g.root))];
   const rootX = {};
-  roots.forEach((r) => { const idx = gpus.map((g, i) => (g.root === r ? i : -1)).filter((i) => i >= 0); rootX[r] = (gx(idx[0]) + gx(idx[idx.length - 1])) / 2; });
   roots.forEach((r) => {
-    const numa = gpus.find((g) => g.root === r).numa;
-    s += `<rect x="${rootX[r] - 80}" y="14" width="160" height="40" rx="8" fill="var(--bg-3)"/><text x="${rootX[r]}" y="32" text-anchor="middle">CPU ${numa !== "-1" ? "socket / NUMA " + esc(numa) : ""}</text><text class="sub" x="${rootX[r]}" y="47" text-anchor="middle">${esc(r)}</text>`;
+    const idx = gpus.map((g, i) => (g.root === r ? i : -1)).filter((i) => i >= 0);
+    const x = (gx(idx[0]) + gx(idx[idx.length - 1])) / 2;
+    rootX[r] = x;
+    s += `<rect x="${x - 66}" y="74" width="132" height="46" rx="8" fill="var(--bg-2)" stroke="var(--line-2)"/><text x="${x}" y="94" text-anchor="middle">Root complex</text><text class="sub" x="${x}" y="110" text-anchor="middle">${esc(r)}</text>`;
   });
   const sw = {};
   (tp.switches || []).forEach((x) => { const xs = x.gpus.map((i) => gx(gpus.findIndex((g) => g.index === i))); sw[x.addr] = (Math.min(...xs) + Math.max(...xs)) / 2; });
   const drawn = new Set();
+  const gy = 290;
   gpus.forEach((g, i) => {
     const x = gx(i); const firstSw = g.bridges.find((b) => b.kind === "switch");
     if (firstSw && sw[firstSw.addr] != null) {
       const sx = sw[firstSw.addr];
       if (!drawn.has(firstSw.addr)) {
         drawn.add(firstSw.addr);
-        s += `<line x1="${rootX[g.root]}" y1="54" x2="${sx}" y2="120" stroke="var(--line-2)" stroke-width="2"/><rect x="${sx - 70}" y="120" width="140" height="38" rx="8" fill="var(--bg-3)"/><text x="${sx}" y="137" text-anchor="middle">PCIe switch</text><text class="sub" x="${sx}" y="151" text-anchor="middle">${esc((tp.switches.find((q) => q.addr === firstSw.addr) || {}).vendor || "")}</text>`;
+        s += `<line x1="${rootX[g.root]}" y1="120" x2="${sx}" y2="176" stroke="var(--line-2)" stroke-width="2"/><rect x="${sx - 70}" y="176" width="140" height="38" rx="8" fill="var(--bg-3)"/><text x="${sx}" y="193" text-anchor="middle">PCIe switch</text><text class="sub" x="${sx}" y="207" text-anchor="middle">${esc((tp.switches.find((q) => q.addr === firstSw.addr) || {}).vendor || "")}</text>`;
       }
-      s += `<line x1="${sx}" y1="158" x2="${x}" y2="230" stroke="var(--s1)" stroke-width="2"/>`;
+      s += `<line x1="${sx}" y1="214" x2="${x}" y2="${gy}" stroke="var(--s1)" stroke-width="2"/>`;
     } else {
-      s += `<line x1="${rootX[g.root]}" y1="54" x2="${x}" y2="230" stroke="var(--s1)" stroke-width="2"/>`;
+      s += `<line x1="${rootX[g.root]}" y1="120" x2="${x}" y2="${gy}" stroke="var(--s1)" stroke-width="2"/>`;
     }
     const l = g.link || {};
     const slow = l.max_gen && l.gen && (l.gen < l.max_gen || l.width < l.max_width);
-    s += `<text class="sub" x="${x + 6}" y="208">${l.gen ? "Gen" + l.gen : ""}${l.width ? " x" + l.width : ""}${slow ? " (below max)" : ""}</text>`;
-    s += `<rect x="${x - 62}" y="230" width="124" height="60" rx="10" fill="var(--bg-2)" stroke="var(--line-2)"/><text x="${x}" y="254" text-anchor="middle">GPU ${g.index}</text><text class="sub" x="${x}" y="270" text-anchor="middle">${esc(g.pci)}</text><text class="sub" x="${x}" y="284" text-anchor="middle">BAR ${fmt(g.large_bar, 0)} GB</text>`;
+    s += `<text class="sub" x="${x + 8}" y="${gy - 14}">${l.gen ? "Gen" + l.gen : ""}${l.width ? " x" + l.width : ""}${slow ? " (below max)" : ""}</text>`;
+    s += `<rect x="${x - 62}" y="${gy}" width="124" height="62" rx="10" fill="var(--bg-2)" stroke="var(--line-2)"/><text x="${x}" y="${gy + 24}" text-anchor="middle">GPU ${g.index}</text><text class="sub" x="${x}" y="${gy + 40}" text-anchor="middle">${esc(g.pci)}</text><text class="sub" x="${x}" y="${gy + 54}" text-anchor="middle">BAR ${fmt(g.large_bar, g.large_bar < 1 ? 2 : 0)} GB</text>`;
   });
-  return `<div class="topo scroll-x"><svg viewBox="0 0 ${W} ${H}" style="min-width:${Math.min(W, 900)}px;width:100%" role="img" aria-label="PCIe topology">${s}</svg></div>
-    <p class="muted">Blue lines are each card's slot link. A small “BAR” means resizable BAR / Above 4G is off in the BIOS, which blocks P2P.</p>`;
+  return `<div class="topo scroll-x"><svg viewBox="0 0 ${W} ${H - 30}" style="min-width:${Math.min(W, 900)}px;width:100%" role="img" aria-label="PCIe topology">${s}</svg></div>
+    <p class="muted">${nSock > 1 ? nSock + " CPU sockets. " : "One CPU. "}A CPU has several PCIe root complexes; cards on different ones talk through the CPU's I/O die. Blue lines are each card's slot link. A BAR much smaller than the card's VRAM means Resizable BAR / Above 4G is off in the BIOS, which blocks P2P.</p>`;
 }
 
 /* ======================================================================= FLEET */

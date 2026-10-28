@@ -125,6 +125,18 @@ def parse_prom(text):
     return out
 
 
+def offload_usage(m):
+    """KV cache usage outside the GPU (CPU/disk offload, KV connectors), as a percent.
+
+    Metric names differ across vLLM versions and connectors, so match by shape: a gauge
+    about KV usage whose name mentions offload, cpu or external."""
+    for name, v in m.items():
+        n = name.lower()
+        if "kv" in n and any(w in n for w in ("offload", "cpu", "external")) and any(w in n for w in ("usage", "perc", "util")):
+            return v * 100.0 if v <= 1.0 else v
+    return None
+
+
 def pick(m, *names):
     for n in names:
         if n in m:
@@ -170,6 +182,8 @@ class VllmPoller(object):
             "e2e_n": pick(m, "vllm:e2e_request_latency_seconds_count"),
             "pc_hit": pick(m, "vllm:prefix_cache_hits_total", "vllm:gpu_prefix_cache_hits_total"),
             "pc_q": pick(m, "vllm:prefix_cache_queries_total", "vllm:gpu_prefix_cache_queries_total"),
+            "ext_hit": pick(m, "vllm:external_prefix_cache_hits_total", "vllm:external_prefix_cache_hits"),
+            "ext_q": pick(m, "vllm:external_prefix_cache_queries_total", "vllm:external_prefix_cache_queries"),
             "sd_acc": pick(m, "vllm:spec_decode_num_accepted_tokens_total"),
             "sd_draft": pick(m, "vllm:spec_decode_num_draft_tokens_total"),
             "done": pick(m, "vllm:request_success_total"),
@@ -178,6 +192,7 @@ class VllmPoller(object):
             "running": pick(m, "vllm:num_requests_running"),
             "waiting": pick(m, "vllm:num_requests_waiting"),
             "kv_usage": pick(m, "vllm:kv_cache_usage_perc", "vllm:gpu_cache_usage_perc"),
+            "kv_offload_usage": offload_usage(m),
             "requests_done": cur["done"],
         })
         if st["kv_usage"] is not None and st["kv_usage"] <= 1.0:
@@ -200,7 +215,7 @@ class VllmPoller(object):
                 return 100.0 * (cur[a] - p[a]) / (cur[b] - p[b])
 
             st.update({"gen_tps": rate("gen"), "prompt_tps": rate("prompt"), "ttft": avg("ttft_sum", "ttft_n"),
-                       "e2e": avg("e2e_sum", "e2e_n"), "prefix_hit": ratio("pc_hit", "pc_q"),
+                       "e2e": avg("e2e_sum", "e2e_n"), "prefix_hit": ratio("pc_hit", "pc_q"), "ext_prefix_hit": ratio("ext_hit", "ext_q"),
                        "spec_accept": ratio("sd_acc", "sd_draft")})
         self.prev = cur
         return st

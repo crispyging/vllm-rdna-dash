@@ -453,8 +453,12 @@ function renderDash() {
   patch($("#dh-attach"), ss.state !== "up" && !ss.attached ? `<details class="attach"><summary>Already running vLLM yourself? Watch that server instead</summary><div class="row" style="margin-top:10px"><input id="attach-url" class="in" placeholder="http://127.0.0.1:8000/v1"><button class="ghost" data-act="attach">Watch it</button></div></details>` : "");
   patch($("#d-problems"), ss.problems && ss.problems.length ? `<div class="panel warn-panel"><div class="eyebrow">Problems found in the log</div>${ss.problems.map(problemRow).join("")}</div>` : "");
 
-  const ext = srv.ext_prefix_hit != null ? ` · ${fmt(srv.ext_prefix_hit)}% external` : (lastReal("ext_prefix_hit")[0] != null ? ` · ${fmt(lastReal("ext_prefix_hit")[0])}% external` : "");
-  const kvNote = srv.kv_offload_usage != null ? `GPU · ${fmt(srv.kv_offload_usage)}% offloaded cache in use` : "of GPU cache in use";
+  const ext = srv.ext_prefix_hit != null ? ` · ${fmt(srv.ext_prefix_hit)}% from offload/connector` : (lastReal("ext_prefix_hit")[0] != null ? ` · ${fmt(lastReal("ext_prefix_hit")[0])}% from offload/connector` : "");
+  const kc = srv.kv_config || {};
+  const kvNote = [kc.tokens ? `of ${fmt(kc.tokens)} tokens on GPU` : "of GPU cache in use",
+    srv.kv_offload_usage != null ? `${fmt(srv.kv_offload_usage)}% offload in use`
+      : kc.offload_on ? `offload on${kc.offload_gb ? " · " + fmt(kc.offload_gb) + " GB" : ""}` : kc.offload_backend ? "offload off" : null]
+    .filter(Boolean).join(" · ");
   const L = { prompt: live("prompt_tps", 0, " tok/s"), ttft: live("ttft", 2, " s"), pc: live("prefix_hit", 0, "%"), sd: live("spec_accept", 0, "%") };
   const tiles = [
     ["prompt", "Prompt reading", "tok/s", L.prompt.v, 0, "prefill", "prompt_tps", "var(--s3)", L.prompt.note || "Prefill, all users", L.prompt.idle],

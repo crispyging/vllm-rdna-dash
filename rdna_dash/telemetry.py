@@ -125,6 +125,47 @@ def parse_prom(text):
     return out
 
 
+_LABEL = re.compile(r'([a-zA-Z_][a-zA-Z0-9_]*)="((?:[^"\\]|\\.)*)"')
+
+
+def info_labels(text, name):
+    """Labels of an info-style metric such as vllm:cache_config_info."""
+    for line in text.splitlines():
+        if line.startswith(name + "{"):
+            return dict(_LABEL.findall(line[len(name) + 1:line.rfind("}")]))
+    return {}
+
+
+def _num(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def kv_config(labels):
+    """KV capacity and offload setup from vllm:cache_config_info.
+
+    vLLM 0.31 reports no separate offloaded-KV gauge; whether offload is on, and how
+    big it is, only shows here (kv_offloading_size / num_cpu_blocks are "None" when off)."""
+    if not labels:
+        return None
+    size = _num(labels.get("kv_offloading_size"))
+    cpu_blocks = _num(labels.get("num_cpu_blocks"))
+    return {
+        "tokens": _num(labels.get("kv_cache_size_tokens")),
+        "gpu_blocks": _num(labels.get("num_gpu_blocks")),
+        "block_size": _num(labels.get("block_size")),
+        "max_concurrency": _num(labels.get("kv_cache_max_concurrency")),
+        "bytes": _num(labels.get("kv_cache_memory_bytes")),
+        "offload_backend": labels.get("kv_offloading_backend") if labels.get("kv_offloading_backend") not in (None, "None") else None,
+        "offload_gb": size,
+        "cpu_blocks": cpu_blocks,
+        "offload_on": bool(size) or bool(cpu_blocks),
+        "prefix_caching": labels.get("enable_prefix_caching") == "True",
+    }
+
+
 def offload_usage(m):
     """KV cache usage outside the GPU (CPU/disk offload, KV connectors), as a percent.
 
@@ -168,7 +209,8 @@ class VllmPoller(object):
             return st
         try:
             with urllib.request.urlopen(base + "/metrics", timeout=timeout) as r:
-                m = parse_prom(r.read().decode("utf-8", "replace"))
+                text = r.read().decode("utf-8", "replace")
+            m = parse_prom(text)
         except Exception:
             return st
         now = time.time()
@@ -193,6 +235,7 @@ class VllmPoller(object):
             "waiting": pick(m, "vllm:num_requests_waiting"),
             "kv_usage": pick(m, "vllm:kv_cache_usage_perc", "vllm:gpu_cache_usage_perc"),
             "kv_offload_usage": offload_usage(m),
+            "kv_config": kv_config(info_labels(text, "vllm:cache_config_info")),
             "requests_done": cur["done"],
         })
         if st["kv_usage"] is not None and st["kv_usage"] <= 1.0:

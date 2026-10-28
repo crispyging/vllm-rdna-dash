@@ -140,6 +140,9 @@ class FakeVllm(object):
                             "vllm:e2e_request_latency_seconds_count %d" % c["e2e_n"],
                             "vllm:request_success_total %d" % c["done"],
                             "vllm:prefix_cache_hits_total %f" % c["pc_hit"], "vllm:prefix_cache_queries_total %f" % c["pc_q"],
+                            'vllm:cache_config_info{block_size="1024",kv_cache_size_tokens="266945",num_gpu_blocks="278",'
+                            'kv_cache_max_concurrency="1.018",kv_offloading_backend="native",kv_offloading_size="None",'
+                            'num_cpu_blocks="None",enable_prefix_caching="True"} 1.0',
                             "vllm:external_prefix_cache_hits_total %f" % (c["pc_q"] * 0.04),
                             "vllm:external_prefix_cache_queries_total %f" % (c["pc_q"] * 0.9),
                             "vllm:spec_decode_num_accepted_tokens_total %f" % c["sd_acc"],

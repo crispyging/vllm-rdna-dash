@@ -360,6 +360,23 @@ class PromTest(unittest.TestCase):
         self.assertAlmostEqual(telemetry.offload_usage(m), 35.0)
         self.assertIsNone(telemetry.offload_usage(telemetry.parse_prom("vllm:kv_cache_usage_perc 0.2\n")))
 
+    def test_kv_config_from_real_cache_info(self):
+        line = ('vllm:cache_config_info{_block_size_resolved="True",block_size="1024",cache_dtype="auto",engine="0",'
+                'gpu_memory_utilization="0.92",kv_cache_dtype_skip_layers="[]",kv_cache_max_concurrency="1.0183150183150182",'
+                'kv_cache_memory_bytes="4026531840",kv_cache_size_tokens="266945",kv_offloading_backend="native",'
+                'kv_offloading_size="None",num_cpu_blocks="None",num_gpu_blocks="278",enable_prefix_caching="True"} 1.0')
+        kc = telemetry.kv_config(telemetry.info_labels("# HELP x\n" + line + "\n", "vllm:cache_config_info"))
+        self.assertEqual(kc["tokens"], 266945)
+        self.assertEqual(kc["gpu_blocks"], 278)
+        self.assertEqual(kc["offload_backend"], "native")
+        self.assertFalse(kc["offload_on"])
+        on = telemetry.kv_config(telemetry.info_labels(line.replace('kv_offloading_size="None"', 'kv_offloading_size="64"'),
+                                                       "vllm:cache_config_info"))
+        self.assertTrue(on["offload_on"])
+        self.assertEqual(on["offload_gb"], 64)
+        # Real 0.31 metrics have no offload usage gauge; the plain KV gauge must not be mistaken for one.
+        self.assertIsNone(telemetry.offload_usage(telemetry.parse_prom(line + "\nvllm:kv_cache_usage_perc 0.0\n")))
+
     def test_parse_sums_labels(self):
         m = telemetry.parse_prom('# HELP x\nvllm:num_requests_running{a="1"} 2\nvllm:num_requests_running{a="2"} 3\nvllm:x_total 1e3\n')
         self.assertEqual(m["vllm:num_requests_running"], 5)

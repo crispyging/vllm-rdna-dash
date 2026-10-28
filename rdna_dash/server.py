@@ -1,9 +1,10 @@
 """HTTP server: the setup wizard, live dashboard, benchmark, topology and fleet API.
 
-Stdlib only. Binds 127.0.0.1 by default; on any other address every request
-needs the access token (cookie set by the one-time ?token= link, or a Bearer
-header for fleet peers). POSTs also need an X-Rdna-Dash header, which a
-cross-site form cannot send.
+Stdlib only. No login by default: anyone who can reach the port can use it.
+Set RDNA_DASH_TOKEN to require a sign-in (cookie from the sign-in page, or a
+Bearer header for fleet peers). Either way, POSTs need an X-Rdna-Dash header
+(a cross-site page cannot send it) and, without a login, the Host header must
+be an IP or a local name, which stops DNS-rebinding pages from reaching it.
 """
 
 import hashlib
@@ -342,7 +343,7 @@ class App(object):
                 script = "%s - <<'PY'\n%sPY" % (tuning.q(py), topology.BANDWIDTH_BENCH)
             else:
                 eng = self.profile.get("container", {}).get("engine") or "docker"
-                groups = "--group-add keep-groups" if self.profile.get("container", {}).get("rootless") else "--group-add video --group-add render"
+                groups = "--group-add keep-groups" if self.profile.get("container", {}).get("rootless") else                     " ".join("--group-add %s" % g for g in tuning.gpu_groups(self.profile))
                 script = ("%s run --rm -i --device /dev/kfd --device /dev/dri %s --security-opt seccomp=unconfined "
                           "--security-opt label=disable --ipc host %s python3 - <<'PY'\n%sPY"
                           % (eng, groups, self.registry.get("image", tuning.load_registry().get("image")), topology.BANDWIDTH_BENCH))
@@ -390,12 +391,35 @@ class App(object):
             "server": self.server_state(), "smoke": self.smoke, "attach_url": self.cfg.get("attach_url"),
             "prefs": self.cfg.get("prefs", {}), "registry_dirs": self.registry.get("dirs"),
             "registry_errors": self.registry.get("errors"), "lan": self.bind not in ("127.0.0.1", "::1", "localhost"),
+            "open_access": self.bind not in ("127.0.0.1", "::1", "localhost") and not getattr(self, "cfg_requires_token", False),
             "job": self.runner.current.info() if self.runner.current else None,
             "suites": {k: v["label"] for k, v in bench.SUITES.items()},
         }
 
 
 # ---------------------------------------------------------------------------- HTTP
+
+
+LOCAL_SUFFIXES = (".local", ".lan", ".home", ".internal", ".localdomain", ".home.arpa")
+
+
+def host_allowed(host_header, extra=()):
+    """True for an IP literal, localhost, a bare or local hostname, or a listed name."""
+    h = (host_header or "").strip().lower()
+    if h.startswith("["):
+        h = h[1:h.find("]")] if "]" in h else h
+    elif h.count(":") == 1:
+        h = h.split(":", 1)[0]
+    if not h:
+        return False
+    try:
+        ipaddress.ip_address(h)
+        return True
+    except ValueError:
+        pass
+    if h == "localhost" or "." not in h or h.endswith(LOCAL_SUFFIXES):
+        return True
+    return h in {x.strip().lower() for x in extra if x.strip()}
 
 
 def _loopback(addr):
@@ -435,6 +459,15 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("body too large")
         return json.loads(self.rfile.read(n).decode() or "{}") if n else {}
 
+    def _host_ok(self):
+        if self.app.cfg_requires_token:
+            return True
+        if host_allowed(self.headers.get("Host"), os.environ.get("RDNA_DASH_ALLOWED_HOSTS", "").split(",")):
+            return True
+        self._send(403, "This dashboard answers on IP addresses and local names only. To use another name, add it to "
+                        "RDNA_DASH_ALLOWED_HOSTS (comma-separated).", "text/plain; charset=utf-8")
+        return False
+
     def _authed(self):
         if not self.app.cfg_requires_token:
             return True
@@ -448,6 +481,8 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- routing
     def do_GET(self):
+        if not self._host_ok():
+            return
         u = urllib.parse.urlparse(self.path)
         qs = urllib.parse.parse_qs(u.query)
         if u.path == "/" and "token" in qs and self.app.cfg_requires_token:
@@ -478,6 +513,8 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(401, LOGIN % '<p class="err">That token did not match.</p>', "text/html; charset=utf-8")
 
     def do_POST(self):
+        if not self._host_ok():
+            return
         u = urllib.parse.urlparse(self.path)
         if u.path == "/login":
             return self._login()
@@ -661,20 +698,21 @@ class Handler(BaseHTTPRequestHandler):
 
 def run(host="127.0.0.1", port=7860, demo=False):
     app = App(demo=demo, bind=host)
-    app.cfg_requires_token = not _loopback(host) if host not in ("localhost",) else False
+    app.cfg_requires_token = bool(os.environ.get("RDNA_DASH_TOKEN", "").strip())
     Handler.app = app
     httpd = ThreadingHTTPServer((host, port), Handler)
     httpd.daemon_threads = True
     shown = "127.0.0.1" if host in ("0.0.0.0", "::") else host
     print("vllm-rdna-dash %s%s" % (__version__, " (demo mode)" if demo else ""))
-    if app.cfg_requires_token:
-        print("  Open http://<this-box>:%d from any machine on your network and sign in with:" % port)
-        print("  token: %s" % app.cfg["token"])
-        print("  (or open http://<this-box>:%d/?token=%s once; set RDNA_DASH_TOKEN to pick your own)" % (port, app.cfg["token"]))
+    local = _loopback(host) or host == "localhost"
+    if local:
+        print("  Open: http://%s:%d/  (this machine only; --host 0.0.0.0 to share it on your network)" % (shown, port))
     else:
-        print("  Open: http://%s:%d/" % (shown, port))
-        print("  Local only. To reach it from another machine: ssh -L %d:127.0.0.1:%d <this-box>" % (port, port))
-        print("  or restart with --host 0.0.0.0 (token required).")
+        print("  Open: http://<this-box>:%d/ from any machine on your network" % port)
+    if app.cfg_requires_token:
+        print("  Sign-in is on: use the RDNA_DASH_TOKEN you set.")
+    elif not local:
+        print("  No login: anyone on your network can use this dashboard. Set RDNA_DASH_TOKEN to require one.")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

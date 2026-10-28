@@ -2,12 +2,12 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/crispyging/vllm-rdna-dash/main/compose.yml -o compose.yml
 #   docker compose up -d                 # or: podman compose up -d
-#   docker logs vllm-rdna-dash           # shows the access token
 #
-# Then open http://<this-box>:7860 from any machine and sign in with the token.
+# Then open http://<this-box>:7860 from any machine on your network.
 #
-# The dashboard starts and stops the vLLM container through the Docker socket.
-# Anyone with the token can do that, so keep the token private.
+# There is no login by default, and the dashboard starts containers through the
+# Docker socket, so anyone on your network can do that. Set RDNA_DASH_TOKEN to
+# require a login.
 
 name: vllm-rdna-dash
 services:
@@ -30,7 +30,8 @@ services:
       RDNA_DASH_ROOT: ${DATA:-/srv/vllm-rdna}
       XDG_CONFIG_HOME: ${DATA:-/srv/vllm-rdna}/dash/config
       XDG_STATE_HOME: ${DATA:-/srv/vllm-rdna}/dash/state
-      RDNA_DASH_TOKEN: ${RDNA_DASH_TOKEN:-}  # empty = generate one and print it in the logs
+      RDNA_DASH_TOKEN: ${RDNA_DASH_TOKEN:-}  # empty = no login; set one to require it
+      RDNA_DASH_ALLOWED_HOSTS: ${ALLOWED_HOSTS:-}  # extra hostnames to answer on (IPs and local names always work)
       RDNA_DASH_LABEL: ${BOX_NAME:-}         # name shown in the dashboard (default: hostname)
       RDNA_DASH_ENGINE: ${ENGINE:-docker}    # docker | podman | podman-rootless
       HF_TOKEN: ${HF_TOKEN:-}                # only for gated models

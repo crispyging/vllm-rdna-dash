@@ -9,7 +9,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from rdna_dash import bench, demo, logdoctor, telemetry, tuning  # noqa: E402
+from rdna_dash import bench, demo, logdoctor, server, telemetry, tuning  # noqa: E402
 
 REG = tuning.load_registry([tuning.BUILTIN_RECIPES])
 
@@ -158,10 +158,30 @@ class TuningTest(unittest.TestCase):
         self.assertIn(os.path.join("/srv/vllm-rdna", "hf-cache") + ":/root/.cache/huggingface", step["script"].replace("'", ""))
         self.assertNotIn("--local-dir", step["script"])
 
+    def test_containers_use_host_gpu_gids(self):
+        prof = copy.deepcopy(self.base)
+        prof["access"]["device_gids"] = {"render": [105], "video": [39]}
+        p = plan(prof, {"recipe": "qwen38-27b-awq"})
+        self.assertIn('group_add: ["39", "105"]', p["launch"]["compose_yaml"])
+        self.assertIn("--group-add 105", " ".join(p["launch"]["run_command"].split()))
+        p = plan(self.base, {"recipe": "qwen38-27b-awq"})  # no readable devices: fall back to names
+        self.assertIn('group_add: ["video", "render"]', p["launch"]["compose_yaml"])
+
     def test_step_scripts_never_use_sudo(self):
         for prefs in ({}, {"recipe": "qwen38-27b-awq"}, {"path": "venv", "recipe": "qwen38-27b-awq"}):
             for s in plan(self.base, prefs)["steps"]:
                 self.assertNotIn("sudo", s.get("script", ""), s["id"])
+
+
+class HostGuardTest(unittest.TestCase):
+    def test_allows_ips_and_local_names_only(self):
+        ok = ["192.168.1.20:7860", "10.0.0.5", "[::1]:7860", "localhost:7860", "gpu-box", "gpu-box:7860",
+              "gpu-box.local", "box.lan:7860", "box.home.arpa"]
+        for h in ok:
+            self.assertTrue(server.host_allowed(h), h)
+        for h in ["evil.example.com", "attacker.net:7860", "", None]:
+            self.assertFalse(server.host_allowed(h), h)
+        self.assertTrue(server.host_allowed("dash.example.com", ["dash.example.com"]))
 
 
 class RegistryTest(unittest.TestCase):

@@ -16,15 +16,15 @@ On the GPU box (Linux with Docker or Podman), one line:
 curl -fsSL https://raw.githubusercontent.com/crispyging/vllm-rdna-dash/main/install.sh | sh
 ```
 
-It starts the dashboard as a container and prints the address and an access token. Open `http://<your-gpu-box>:7860` from any computer on your network and sign in with the token. Run the same line again to update.
+It starts the dashboard as a container and prints its address. Open `http://<your-gpu-box>:7860` from any computer on your network. There's no login to set up. Run the same line again to update.
 
 Under the hood it:
 - finds Docker or Podman (rootless too)
 - creates `~/vllm-rdna` for models, caches, settings and benchmark results
-- writes a `.env` with a random token there
+- writes a `.env` there with the host's GPU group IDs (read from `/dev/kfd` and `/dev/dri`, refreshed every run), so the containers can open the GPUs
 - runs [`compose.yml`](compose.yml)
 
-Prefer to do it by hand? Download `compose.yml`, then `docker compose up -d`; the token is in `docker logs vllm-rdna-dash`.
+Prefer to do it by hand? Download `compose.yml`, set `VIDEO_GID` and `RENDER_GID` in a `.env` next to it (`stat -c %g /dev/dri/card0 /dev/kfd`), then `docker compose up -d`.
 
 **Without containers:** `install-host.sh` installs the tool directly on the host (Python 3.8+ and git), which is also the only way to build the fork in a host venv:
 
@@ -119,7 +119,7 @@ curl -fsSL https://raw.githubusercontent.com/crispyging/vllm-rdna-dash/main/tool
 
 It handles grubby (Fedora/RHEL), update-grub / grub-mkconfig (Debian/Ubuntu/Arch/openSUSE), kernelstub (Pop!_OS) and systemd-boot `/etc/kernel/cmdline`, and backs up what it edits.
 
-**Fleet.** Add your other boxes (dashboard URL and token) and see them side by side. Box names and addresses stay in your local config, never in this repo.
+**Fleet.** Add your other boxes (dashboard URL, plus their token if they require a login) and see them side by side. Box names and addresses stay in your local config, never in this repo.
 
 ## Recipes
 
@@ -153,9 +153,10 @@ A later file with the same `id` overrides an earlier one. Broken files are liste
 
 ## Security
 
-- The container install listens on your network (port 7860) and always needs the token. A host install binds to `127.0.0.1` unless you pass `--host 0.0.0.0`.
-- The dashboard container mounts the Docker socket so it can run the vLLM container. That is root-equivalent on the host, so treat the token like a password; set your own with `RDNA_DASH_TOKEN` in `~/vllm-rdna/.env`.
-- On any other address, every request needs the token (cookie from the one-time link, or `Authorization: Bearer` for fleet peers). POSTs also need a custom header, which a cross-site page cannot send.
+- **No login by default.** The container install listens on your network (port 7860), and anyone who can reach that port can use it. The dashboard shows a warning saying so. A host install binds to `127.0.0.1` unless you pass `--host 0.0.0.0`.
+- The dashboard container mounts the Docker socket so it can run the vLLM container. That is root-equivalent on the host, so only run it without a login on a network you trust.
+- **To require a login**, set `RDNA_DASH_TOKEN=<something long>` in `~/vllm-rdna/.env` and rerun the installer. You then sign in once per browser; fleet peers send it as `Authorization: Bearer`.
+- Either way, websites you visit can't drive it: POSTs need a custom header a cross-site page cannot send, and without a login it only answers to IP addresses and local names (`gpu-box`, `gpu-box.local`, `.lan`), which blocks DNS-rebinding pages. Use another name by listing it in `RDNA_DASH_ALLOWED_HOSTS`.
 - The model server binds to localhost unless you turn on LAN sharing.
 - Install scripts come from the plan, never from the browser, and never use sudo.
 - `rdna-dash share` and "Copy redacted report" strip the hostname, username and tokens.

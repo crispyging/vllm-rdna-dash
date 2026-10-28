@@ -124,6 +124,13 @@ def check(cid, level, title, detail, fix=None, link=None):
     return {"id": cid, "level": level, "title": title, "detail": detail, "fix": fix or [], "link": link}
 
 
+def gpu_groups(profile):
+    """Groups a GPU container needs, as host GIDs when we can read them, else names."""
+    gids = profile.get("access", {}).get("device_gids") or {}
+    nums = sorted({g for v in gids.values() for g in v if g != 0})
+    return [str(g) for g in nums] if nums else ["video", "render"]
+
+
 def setting(key, value, why):
     return {"key": key, "value": value, "why": why}
 
@@ -326,10 +333,16 @@ def build_plan(profile, prefs=None, registry=None):
         if acc.get("kfd_exists") and acc.get("kfd_rw"):
             checks.append(check("access", "ok", "GPU access rights", "The dashboard container can open /dev/kfd and the render nodes."))
         elif acc.get("kfd_exists"):
+            g = acc.get("device_gids") or {}
+            vid, ren = (g.get("video") or ["?"])[0], (g.get("render") or ["?"])[0]
             checks.append(check("kfd-perm", "fail", "The dashboard container cannot open /dev/kfd",
-                                "Keep group_add: [video, render] in the dashboard compose.yml (rootless Podman: [keep-groups]) and "
-                                "security_opt label=disable on SELinux hosts, then recreate the container.",
-                                ["docker compose up -d --force-recreate"], "troubleshooting/vllm.html#failed-to-infer-device-type--amdsmi_status_not_init"))
+                                "The GPU devices belong to group %s (render) and %s (video) on this host, but the container "
+                                "is not in them. Put those numbers in ~/vllm-rdna/.env (rerunning the installer does this) "
+                                "and recreate the container. Rootless Podman uses group_add: [keep-groups] instead; SELinux "
+                                "hosts also need security_opt label=disable." % (ren, vid),
+                                ["sed -i -e 's/^VIDEO_GID=.*/VIDEO_GID=%s/' -e 's/^RENDER_GID=.*/RENDER_GID=%s/' ~/vllm-rdna/.env" % (vid, ren),
+                                 "cd ~/vllm-rdna && docker compose up -d --force-recreate"],
+                                "troubleshooting/vllm.html#failed-to-infer-device-type--amdsmi_status_not_init"))
     elif missing:
         checks.append(check("groups", "fail", "Not in the %s group%s" % (" and ".join(missing), "s" if len(missing) > 1 else ""),
                             "Without both video and render, vLLM fails with `Failed to infer device type` or "
@@ -587,7 +600,7 @@ def build_plan(profile, prefs=None, registry=None):
 # Launch commands
 
 
-def container_spec(reg, paths, r, used, tp, port, host, served, max_len, p2p, hsa, ple, ple_dir, model_dir):
+def container_spec(reg, paths, r, used, tp, port, host, served, max_len, p2p, hsa, ple, ple_dir, model_dir, groups=None):
     env = {"HIP_VISIBLE_DEVICES": ",".join(str(g["index"]) for g in used)}
     if hsa:
         env["HSA_OVERRIDE_GFX_VERSION"] = hsa
@@ -614,13 +627,14 @@ def container_spec(reg, paths, r, used, tp, port, host, served, max_len, p2p, hs
     cmd += ccfg.get("args", [])
     if max_len:
         cmd += ["--max-model-len", str(max_len)]
+    groups = groups or ["video", "render"]
     publish = ("%d:8000" % port) if host == "0.0.0.0" else ("127.0.0.1:%d:8000" % port)
-    return {"image": reg["image"], "env": env, "volumes": vols, "command": cmd, "publish": publish}
+    return {"image": reg["image"], "env": env, "volumes": vols, "command": cmd, "publish": publish, "groups": groups}
 
 
 def compose_yaml(spec, rootless_podman):
     """compose.yml that runs under docker compose, podman compose and podman-compose."""
-    groups = '["keep-groups"]' if rootless_podman else "[video, render]"
+    groups = '["keep-groups"]' if rootless_podman else "[%s]" % ", ".join(json.dumps(g) for g in spec.get("groups") or ["video", "render"])
 
     def s(v):
         return json.dumps(str(v))
@@ -633,7 +647,8 @@ def compose_yaml(spec, rootless_podman):
         "    image: %s" % s(spec["image"]),
         "    container_name: vllm-rdna",
         "    devices: [/dev/kfd, /dev/dri]",
-        "    group_add: %s%s" % (groups, "   # rootless Podman: pass your host video/render groups through" if rootless_podman else ""),
+        "    group_add: %s%s" % (groups, "   # rootless Podman: pass your host video/render groups through" if rootless_podman
+                                     else "   # host GIDs of /dev/kfd and /dev/dri"),
         "    ipc: host",
         "    # label=disable lets the container open /dev/kfd under SELinux (Fedora, RHEL).",
         "    security_opt: [seccomp=unconfined, label=disable]",
@@ -650,7 +665,11 @@ def compose_yaml(spec, rootless_podman):
 
 def _run_argv(engine, spec, rootless_podman):
     args = [engine, "run", "-d", "--name", "vllm-rdna", "--device", "/dev/kfd", "--device", "/dev/dri"]
-    args += ["--group-add", "keep-groups"] if rootless_podman else ["--group-add", "video", "--group-add", "render"]
+    if rootless_podman:
+        args += ["--group-add", "keep-groups"]
+    else:
+        for g in spec.get("groups") or ["video", "render"]:
+            args += ["--group-add", g]
     args += ["--security-opt", "seccomp=unconfined", "--security-opt", "label=disable", "--ipc", "host",
              "-p", spec["publish"]]
     for v in spec["volumes"]:
@@ -664,7 +683,8 @@ def container_launch(reg, profile, paths, r, used, tp, port, host, served, max_l
     cont = profile.get("container", {})
     engine = cont.get("engine") or "docker"
     rootless = engine == "podman" and cont.get("rootless")
-    spec = container_spec(reg, paths, r, used, tp, port, host, served, max_len, p2p, hsa, ple, ple_dir, model_dir)
+    spec = container_spec(reg, paths, r, used, tp, port, host, served, max_len, p2p, hsa, ple, ple_dir, model_dir,
+                          gpu_groups(profile))
     compose = cont.get("compose") or None
     run_argv = _run_argv(engine, spec, rootless)
     return {

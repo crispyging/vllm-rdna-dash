@@ -203,6 +203,8 @@ const actions = {
 async function refresh() {
   try { S = await api.get("/api/state"); } catch (e) { $("#rail-status").innerHTML = pill("fail", "Dashboard offline"); return; }
   $("#demo-banner").hidden = !S.demo;
+  let seen = false; try { seen = localStorage.getItem("rdna-open-ok") === "1"; } catch { /* private mode */ }
+  $("#open-banner").hidden = !S.open_access || seen;
   renderRail();
   if (view === "setup") renderSetup();
   if (view === "dash") renderDash();
@@ -716,6 +718,7 @@ function go() {
   ({ setup: renderSetup, dash: () => { renderDash(); loadTelemetry(); }, chat: renderChat, bench: loadBench, topo: () => loadTopo(false), fleet: loadFleet, logs: renderLogs }[view] || (() => {}))();
 }
 window.addEventListener("hashchange", go);
+$("#open-dismiss").addEventListener("click", () => { try { localStorage.setItem("rdna-open-ok", "1"); } catch { /* ignore */ } $("#open-banner").hidden = true; });
 (function theme() {
   let t = null; try { t = localStorage.getItem("rdna-theme"); } catch { /* private mode */ }
   if (t) document.documentElement.dataset.theme = t;

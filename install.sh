@@ -67,27 +67,46 @@ if [ "$FLAVOR" = podman-rootless ]; then
     sed -i 's/^    group_add: \[.*/    group_add: [keep-groups]/' compose.yml
 fi
 
+# Host group IDs that own the GPU devices. Containers need the numbers: a name like
+# "render" would be looked up inside the image, where it may not exist or match.
+gid_of() { stat -c %g "$1" 2>/dev/null || true; }
+RENDER_GID="$(gid_of /dev/kfd)"
+[ -n "$RENDER_GID" ] || RENDER_GID="$(getent group render 2>/dev/null | cut -d: -f3)"
+VIDEO_GID=""
+for f in /dev/dri/card*; do [ -e "$f" ] && VIDEO_GID="$(gid_of "$f")" && break; done
+[ -n "$VIDEO_GID" ] || VIDEO_GID="$(getent group video 2>/dev/null | cut -d: -f3)"
+VIDEO_GID="${VIDEO_GID:-44}"; RENDER_GID="${RENDER_GID:-$VIDEO_GID}"
+
+# Set KEY=value in .env, replacing an existing line or adding one.
+set_env() {
+    if grep -q "^$1=" .env 2>/dev/null; then sed -i "s|^$1=.*|$1=$2|" .env; else echo "$1=$2" >> .env; fi
+}
+
 if [ -f .env ]; then
-    say "Keeping your existing $DATA/.env"
+    say "Updating $DATA/.env (keeping your settings)"
+    # Older installs generated a login token automatically; login is now opt-in.
+    if grep -Eq '^RDNA_DASH_TOKEN=[0-9a-f]{48}$' .env; then
+        sed -i -E 's/^RDNA_DASH_TOKEN=[0-9a-f]{48}$/# RDNA_DASH_TOKEN=   # login is off; set a value to require one/' .env
+        say "Turned off the auto-generated login token (set RDNA_DASH_TOKEN to require a login)."
+    fi
 else
-    TOKEN="$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-    VIDEO_GID="$(getent group video 2>/dev/null | cut -d: -f3)"
-    RENDER_GID="$(getent group render 2>/dev/null | cut -d: -f3)"
-    cat > .env <<EOF
+    cat > .env <<ENVFILE
 # vllm-rdna-dash settings. Edit, then run: $COMPOSE up -d
 DATA=$DATA
 PORT=$PORT
-RDNA_DASH_TOKEN=$TOKEN
 BOX_NAME=$(hostname 2>/dev/null || echo gpu-box)
 ENGINE=$FLAVOR
 DOCKER_SOCK=$SOCK
-# Host group IDs that own /dev/kfd and /dev/dri (see: getent group video render)
-VIDEO_GID=${VIDEO_GID:-44}
-RENDER_GID=${RENDER_GID:-992}
+# Login is off: anyone on your network can use the dashboard. Set a value to require one.
+# RDNA_DASH_TOKEN=
 # HF_TOKEN=   # only for gated models
-EOF
+ENVFILE
     chmod 600 .env
 fi
+# Refreshed on every run, so a driver or distro change never leaves them stale.
+set_env VIDEO_GID "$VIDEO_GID"
+set_env RENDER_GID "$RENDER_GID"
+say "GPU groups: video=$VIDEO_GID render=$RENDER_GID (from /dev/dri and /dev/kfd)"
 
 # ---- start ------------------------------------------------------------------------
 say "Pulling and starting the dashboard"
@@ -107,6 +126,6 @@ TOKEN="$(sed -n 's/^RDNA_DASH_TOKEN=//p' .env)"
 echo
 say "vllm-rdna-dash is running."
 echo "  Open:   http://${IP:-<this-box>}:$PORT   (from any machine on your network)"
-echo "  Token:  $TOKEN"
+if [ -n "$TOKEN" ]; then echo "  Login:  your RDNA_DASH_TOKEN"; else echo "  Login:  none. Anyone on your network can use it; set RDNA_DASH_TOKEN in .env to require one."; fi
 echo "  Files:  $DATA   (settings in $DATA/.env)"
 echo "  Update: run this installer again.   Stop: cd $DATA && $COMPOSE down"

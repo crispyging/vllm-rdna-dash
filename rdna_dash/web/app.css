@@ -88,6 +88,9 @@ main { padding: 34px clamp(16px, 4vw, 56px) 80px; min-width: 0; outline: none; }
 .view { display: none; max-width: 1240px; }
 .view.active { display: block; }
 .banner { background: var(--bg-3); border-left: 3px solid var(--key); padding: 10px 14px; margin-bottom: 22px; font-size: 14px; }
+.banner.open { display: flex; align-items: center; gap: 14px; justify-content: space-between; border-left-color: var(--warning); }
+.banner.open[hidden] { display: none; }
+.banner code { font-size: 12.5px; }
 
 /* ---------- Punch Type */
 .punch { font: italic 900 clamp(38px, 6vw, 74px)/0.95 var(--display); text-transform: uppercase; letter-spacing: -0.025em;

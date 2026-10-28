@@ -234,10 +234,26 @@ def rocm_info():
     }
 
 
+def device_gids():
+    """Numeric groups that own the GPU device nodes. Containers need these numbers:
+    a name like "render" is looked up inside the image and may not exist or match."""
+    out = {}
+    for pattern, role in (("/dev/kfd", "render"), ("/dev/dri/renderD*", "render"), ("/dev/dri/card*", "video")):
+        for p in glob.glob(pattern):
+            try:
+                out.setdefault(role, set()).add(os.stat(p).st_gid)
+            except OSError:
+                pass
+    return {k: sorted(v) for k, v in out.items()}
+
+
 def access_info():
     groups = _run(["id", "-nG"]).split()
     kfd = os.path.exists("/dev/kfd")
+    gids = device_gids()
     return {
+        "device_gids": gids,
+        "process_gids": sorted(set(os.getgroups() + [os.getgid()])) if hasattr(os, "getgroups") else [],
         "user": os.environ.get("USER", ""),
         "groups": groups,
         "in_video": "video" in groups,

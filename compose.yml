@@ -19,7 +19,10 @@ services:
     network_mode: host
     # Lets the dashboard read the GPUs and check they are usable.
     devices: [/dev/kfd, /dev/dri]
-    group_add: [video, render]          # rootless Podman: [keep-groups]
+    # Numeric host GIDs: the image has no `render` group, and names would resolve inside the image,
+    # not on the host. install.sh fills VIDEO_GID/RENDER_GID in .env; find yours with
+    #   getent group video render
+    group_add: ["${VIDEO_GID:-44}", "${RENDER_GID:-992}"]          # rootless Podman: [keep-groups]
     security_opt: [label=disable]        # SELinux hosts (Fedora, RHEL)
     environment:
       # Models, caches, the generated vLLM compose.yml, benchmarks and settings live here.

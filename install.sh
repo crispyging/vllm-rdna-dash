@@ -64,13 +64,15 @@ cd "$DATA"
 say "Fetching compose.yml into $DATA"
 curl -fsSL "$RAW/compose.yml" -o compose.yml
 if [ "$FLAVOR" = podman-rootless ]; then
-    sed -i 's/^    group_add: \[video, render\].*/    group_add: [keep-groups]/' compose.yml
+    sed -i 's/^    group_add: \[.*/    group_add: [keep-groups]/' compose.yml
 fi
 
 if [ -f .env ]; then
     say "Keeping your existing $DATA/.env"
 else
     TOKEN="$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+    VIDEO_GID="$(getent group video 2>/dev/null | cut -d: -f3)"
+    RENDER_GID="$(getent group render 2>/dev/null | cut -d: -f3)"
     cat > .env <<EOF
 # vllm-rdna-dash settings. Edit, then run: $COMPOSE up -d
 DATA=$DATA
@@ -79,6 +81,9 @@ RDNA_DASH_TOKEN=$TOKEN
 BOX_NAME=$(hostname 2>/dev/null || echo gpu-box)
 ENGINE=$FLAVOR
 DOCKER_SOCK=$SOCK
+# Host group IDs that own /dev/kfd and /dev/dri (see: getent group video render)
+VIDEO_GID=${VIDEO_GID:-44}
+RENDER_GID=${RENDER_GID:-992}
 # HF_TOKEN=   # only for gated models
 EOF
     chmod 600 .env

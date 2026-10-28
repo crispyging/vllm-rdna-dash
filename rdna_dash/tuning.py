@@ -186,14 +186,39 @@ def ecc_status(profile, chosen):
                                     "applies it on the second boot." % hidden[0]["vram_gb"],
                                     ["sudo reboot"], "tuning/ecc.html")
     else:
-        state, c = "on", check("ecc", "info", "ECC is on, hiding ~2 GB per card",
-                               "%.1f GB visible of 32 GB. Turning ECC off gives each card ~2 GB more KV cache. "
-                               "No errors are reported right now. Stress-test first if the cards are second-hand."
-                               % hidden[0]["vram_gb"],
+        state, c = "on", check("ecc", "rec", "Turn ECC off: ~2 GB more per card",
+                               "%.1f GB visible of 32 GB. With ECC off each card gets ~2 GB more KV cache, which the "
+                               "community runs by default. No ECC errors are reported right now; stress-test first if the "
+                               "cards are second-hand." % hidden[0]["vram_gb"],
                                [cmd % "off", "sudo reboot   # first reboot arms it", "sudo reboot   # second reboot applies it"],
                                "tuning/ecc.html")
     c["action"] = "ecc"
     return {"state": state, "check": c}
+
+
+POWER_TARGET_W = 180
+
+
+def power_status(chosen):
+    """Recommend the community 180 W cap on V620s (stock is 250 W)."""
+    v620 = [g for g in chosen if g.get("device_id") == "73a1" and g.get("power_cap_w")]
+    if not v620:
+        return {"state": "n/a"}
+    high = [g for g in v620 if g["power_cap_w"] > POWER_TARGET_W + 5]
+    if not high:
+        return {"state": "ok", "check": check("power", "ok", "Power capped at %d W" % max(g["power_cap_w"] for g in v620),
+                                              "Cooler, quieter cards with little speed loss on memory-bound inference.",
+                                              ["sudo ./tools/power.sh status"], "tuning/power.html")}
+    floor = max((g.get("power_cap_min_w") or 0) for g in v620)
+    cmd = ["sudo ./tools/power.sh %d --persist   # applies now and at every boot" % POWER_TARGET_W]
+    detail = ("Cards are at %d W. Inference is memory-bound, so the community caps V620s at %d W: much cooler "
+              "and quieter for little speed loss." % (high[0]["power_cap_w"], POWER_TARGET_W))
+    if floor > POWER_TARGET_W:
+        detail += (" Your driver reports a %d W minimum (the V620 VBIOS floor), so the cap needs the v620_toolbox "
+                   "powerfix first. Some older kernels accept the write anyway; the script tries and tells you." % floor)
+        cmd = ["git clone https://github.com/blivioniag/v620_toolbox   # then follow powertuning/README"] + cmd
+    return {"state": "high", "floor": floor,
+            "check": check("power", "rec", "Cap power at %d W" % POWER_TARGET_W, detail, cmd, "tuning/power.html")}
 
 
 def default_prefs():
@@ -442,13 +467,9 @@ def build_plan(profile, prefs=None, registry=None):
         settings.append(setting("PLE", ple, why))
 
     # ---- power / ECC ----------------------------------------------------------------------------
-    if card.get("device_id") == "73a1" and (card.get("power_cap_w") or 0) > 200:
-        checks.append(check("power", "info", "V620 at the stock %d W cap" % card["power_cap_w"],
-                            "Inference is memory-bound; the community runs a 180 W cap for cooler cards with little "
-                            "speed loss. Optional, via v620_toolbox.", link="tuning/power.html"))
-    ecc = ecc_status(profile, chosen)
-    if ecc["state"] != "n/a":
-        checks.append(ecc["check"])
+    for st in (ecc_status(profile, chosen), power_status(chosen)):
+        if st["state"] != "n/a":
+            checks.append(st["check"])
 
     # ---- endpoint -------------------------------------------------------------------------------
     venv_cfg = r.get("venv", {})
@@ -671,6 +692,12 @@ def build_steps(reg, path, r, multi, paths, model_dir, ple, rocm_home, launch, c
     steps = [{"id": "host", "kind": "check", "title": "Check the host",
               "summary": "Driver, GPU access, groups, and the tools this path needs. Anything that needs root shows the "
                          "exact commands; run them in a terminal, then press Re-check.", "blocked_by": fails}]
+    tune = [c for c in checks if c["id"] in ("ecc", "power")]
+    if tune:
+        steps.append({"id": "tune", "kind": "tune", "title": "Recommended V620 tuning",
+                      "summary": "ECC off for ~2 GB more VRAM per card and a 180 W power cap. Both need root, so run the "
+                                 "commands below in a terminal. Setup carries on without them; you can do them any time.",
+                      "pending": [c["id"] for c in tune if c["level"] == "rec"], "checks": tune})
     m = r["model"]
     rev = " --revision %s" % q(m["revision"]) if m.get("revision") else ""
     venv, src = paths["venv"], paths["src"]

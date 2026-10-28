@@ -88,6 +88,8 @@ class App(object):
             rec = st.get(s["id"]) or {}
             if s["kind"] == "check":
                 status = "needs-you" if s.get("blocked_by") else "done"
+            elif s["kind"] == "tune":
+                status = "recommended" if s.get("pending") else "done"
             elif s["kind"] == "serve":
                 status = "done" if self.server_state()["state"] == "up" else ("running" if self.server_state()["state"] == "starting" else "todo")
             elif s["kind"] == "smoke":
@@ -178,8 +180,8 @@ class App(object):
                     return
                 status = self.step_status()[s["id"]]["status"]
                 ap["step"] = s["id"]
-                if status in ("done", "skipped"):
-                    continue
+                if status in ("done", "skipped") or s["kind"] == "tune":
+                    continue  # tuning needs root and reboots: shown, never blocks setup
                 # Optional probes (P2P) still run here: their result tunes the plan. A failure is skipped below.
                 if s["kind"] == "check":
                     ap.update(status="needs-you", message="Some things need you first. Run the commands shown, then press Re-check.")

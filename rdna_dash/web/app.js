@@ -67,8 +67,8 @@ function toast(msg) {
 function pill(level, text) { return `<span class="pill ${level}">${esc(text)}</span>`; }
 function cmdBlock(text) { return `<div class="cmd">${esc(text)}<button class="ghost small copy" data-copy="${esc(text)}">Copy</button></div>`; }
 function slamOnce(key) { if (ui.slammed[key]) return ""; ui.slammed[key] = true; return " slam"; }
-const stepLevel = { done: "ok", running: "run", "needs-you": "warn", failed: "fail", cancelled: "warn", todo: "idle" };
-const stepText = { done: "Done", running: "Running", "needs-you": "Needs you", failed: "Failed", cancelled: "Cancelled", todo: "To do" };
+const stepLevel = { done: "ok", running: "run", "needs-you": "warn", failed: "fail", cancelled: "warn", todo: "idle", recommended: "rec" };
+const stepText = { done: "Done", running: "Running", "needs-you": "Needs you", failed: "Failed", cancelled: "Cancelled", todo: "To do", recommended: "Recommended" };
 
 function countTo(el, value, digits) {
   if (!el) return;
@@ -110,8 +110,9 @@ function lineChart(id, opts) {
     const pts = s.pts.filter((p) => p[1] != null).map((p) => [cats ? p[0] : p[0], p[1]]);
     if (!pts.length) continue;
     const d = pts.map((p, i) => `${i ? "L" : "M"}${sx(p[0]).toFixed(1)},${sy(p[1]).toFixed(1)}`).join("");
-    g += `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
-    if (cats || pts.length < 3) g += pts.map((p) => `<circle cx="${sx(p[0])}" cy="${sy(p[1])}" r="4" fill="${s.color}" stroke="var(--bg)" stroke-width="2"/>`).join("");
+    if (opts.area && pts.length > 1) g += `<path d="${d}L${sx(pts[pts.length - 1][0]).toFixed(1)},${sy(0)}L${sx(pts[0][0]).toFixed(1)},${sy(0)}Z" style="fill:${s.color};opacity:.12"/>`;
+    g += `<path d="${d}" fill="none" style="stroke:${s.color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+    if (cats || pts.length < 3) g += pts.map((p) => `<circle cx="${sx(p[0])}" cy="${sy(p[1])}" r="4" style="fill:${s.color};stroke:var(--bg)" stroke-width="2"/>`).join("");
   }
   g += `<line class="xh" x1="0" x2="0" y1="${Tp}" y2="${H - B}" stroke="var(--line-2)" visibility="hidden"/>`;
   charts.set(id, { opts, sx, x0, x1, L, R, W, cats });
@@ -271,7 +272,7 @@ function renderSetup(force) {
   const needs = P.checks.filter((c) => c.level === "fail" || c.level === "warn");
   patch($("#s-needs"), needs.length ? `<div class="sec"><h2>Needs you</h2>${needs.map(checkRow).join("")}</div>` : "");
 
-  const cur = P.steps.find((s) => !["done"].includes(S.steps[s.id].status));
+  const cur = P.steps.find((s) => !["done", "recommended"].includes(S.steps[s.id].status));
   patch($("#s-steps"), `<ol class="steps">${P.steps.map((s) => stepRow(s, cur && cur.id === s.id)).join("")}</ol>`);
 
   patch($("#s-plan"), `<div class="kv">${P.settings.map((s) => `<div class="k">${glossKey(s.key)}</div><div class="v">${esc(s.value)}<span class="why">${esc(s.why)}</span></div>`).join("")}</div>
@@ -279,7 +280,7 @@ function renderSetup(force) {
     <details style="margin-top:18px"><summary>Show the exact launch command</summary>${cmdBlock(P.launch.command)}${P.launch.compose_yaml ? `<p class="muted" style="margin:12px 0 0">${term("compose.yml", "compose")} written to ${esc(P.launch.compose_file)}</p>${cmdBlock(P.launch.compose_yaml)}` : ""}</details>
     ${S.registry_errors && S.registry_errors.length ? `<div class="problem"><div class="t">Some recipe files were skipped</div><div class="d">${S.registry_errors.map(esc).join("<br>")}</div></div>` : ""}`);
 
-  const tune = P.checks.filter((c) => ["ecc", "power", "iommu"].includes(c.id) && c.level !== "fail");
+  const tune = P.checks.filter((c) => ["iommu"].includes(c.id));
   const multi = ch.tp * ch.pp > 1;
   patch($("#s-tune"), (tune.length ? tune.map(checkRow).join("") : `<p class="empty">Nothing to tune right now.</p>`) +
     (multi ? `<div class="check"><span>${pill("info", "P2P")}</span><div class="t">See how your GPUs talk to each other</div><div class="d">Map the PCIe paths, count the ${term("hops", "hops")}, and measure real GPU-to-GPU bandwidth. The result tunes ${term("P2P", "p2p")} for you.</div><div class="fix"><a class="ghost" href="#topo" style="display:inline-block;text-decoration:none">Open Topology</a></div></div>` : ""));
@@ -289,7 +290,7 @@ function glossKey(k) {
   const g = map[k]; return g ? term(esc(k), g) : esc(k);
 }
 function checkRow(c) {
-  return `<div class="check"><span>${pill(c.level, { ok: "OK", info: "Tip", warn: "Check", fail: "Needs you" }[c.level])}</span>
+  return `<div class="check"><span>${pill(c.level, { ok: "OK", info: "Tip", rec: "Recommended", warn: "Check", fail: "Needs you" }[c.level])}</span>
     <div class="t">${esc(c.title)}</div><div class="d">${esc(c.detail)}${c.link ? ` <a href="${esc(c.link)}" target="_blank" rel="noopener">Read more</a>` : ""}</div>
     ${c.fix && c.fix.length ? `<div class="fix">${cmdBlock(c.fix.join("\n"))}</div>` : ""}</div>`;
 }
@@ -307,6 +308,8 @@ function stepRow(s, isCur) {
     if (s.optional && status !== "done") acts += `<span class="muted" style="font-size:13px">Optional</span>`;
   } else if (s.kind === "check") {
     acts = status === "needs-you" ? `<button class="ghost small" data-act="recheck">Re-check</button>` : "";
+  } else if (s.kind === "tune") {
+    acts = status === "recommended" ? `<button class="ghost small" data-act="recheck">Re-check after rebooting</button>` : "";
   } else if (s.kind === "write") {
     acts = `<button class="ghost small" data-act="run" data-arg="${s.id}">${status === "done" ? "Write again" : "Write it"}</button>`;
   } else if (s.kind === "serve") {
@@ -319,6 +322,7 @@ function stepRow(s, isCur) {
     if (S.smoke && !S.smoke.ok) acts += `<span class="muted">${esc(S.smoke.error)}</span>`;
   }
   let extra = "";
+  if (s.kind === "tune") extra += `<div class="tune-list">${s.checks.map(checkRow).join("")}</div>`;
   if (s.kind === "check" && s.blocked_by && s.blocked_by.length) extra = `<p class="muted">Waiting on: ${s.blocked_by.map(esc).join(", ")}. The commands are under “Needs you”.</p>`;
   if (ui.openStep === s.id && job) {
     extra += `<div class="log" data-k="${s.id}">${esc(ui.logs[job] || "Loading…")}</div>`;
@@ -347,79 +351,127 @@ function changeForm() {
 }
 
 /* ======================================================================= DASHBOARD */
+function spark(vals, color, h = 34) {
+  const v = vals.filter((x) => x != null && !isNaN(x));
+  if (v.length < 2) return `<svg class="spark" viewBox="0 0 120 ${h}" preserveAspectRatio="none" aria-hidden="true"></svg>`;
+  const max = Math.max(...v, 1e-9), n = vals.length;
+  const pts = vals.map((x, i) => [(i / (n - 1)) * 120, h - 2 - ((x == null ? 0 : x) / max) * (h - 6)]);
+  const d = pts.map((p, i) => `${i ? "L" : "M"}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join("");
+  return `<svg class="spark" viewBox="0 0 120 ${h}" preserveAspectRatio="none" aria-hidden="true">
+    <path d="${d}L120,${h}L0,${h}Z" style="fill:${color};opacity:.14"/><path d="${d}" fill="none" style="stroke:${color}" stroke-width="1.6" vector-effect="non-scaling-stroke" stroke-linejoin="round"/></svg>`;
+}
+function ring(pct, color) {
+  const r = 30, c = 2 * Math.PI * r, p = Math.max(0, Math.min(100, pct || 0));
+  return `<svg class="ring" viewBox="0 0 76 76" aria-hidden="true"><circle cx="38" cy="38" r="${r}" style="stroke:var(--bg-3)" stroke-width="7" fill="none"/>
+    <circle cx="38" cy="38" r="${r}" style="stroke:${color};transition:stroke-dashoffset .5s" stroke-width="7" fill="none" stroke-linecap="round"
+      stroke-dasharray="${c.toFixed(1)}" stroke-dashoffset="${(c * (1 - p / 100)).toFixed(1)}" transform="rotate(-90 38 38)"/></svg>`;
+}
+const info = (key) => `<span class="q" tabindex="0" data-tip="${key}" aria-label="What is this?">i</span>`;
+
 function renderDash() {
   const el = $("#view-dash"); if (!S) return;
   if (!el.dataset.built) {
-    el.innerHTML = `<div id="d-hero"></div><div id="d-problems"></div><div id="d-kpis"></div>
-      <div class="sec"><h2>Throughput, last 5 minutes</h2><div class="cols"><div id="d-c1"></div><div id="d-c2"></div></div></div>
-      <div class="sec"><h2>GPUs</h2><div id="d-gpus"></div></div>
-      <div class="sec"><h2>This machine</h2><div id="d-host"></div></div>
-      <div class="sec"><h2>Connect an app</h2><div id="d-connect"></div></div>`;
+    el.innerHTML = `<div id="d-hero"></div><div id="d-problems"></div><div id="d-tiles" class="tiles"></div>
+      <div class="grid2"><div class="panel" id="d-c1"></div><div class="panel" id="d-c2"></div></div>
+      <div class="panel-head"><h2>GPUs</h2><span id="d-gpu-sum" class="muted"></span></div><div id="d-gpus" class="gpu-grid"></div>
+      <div class="grid2"><div class="panel" id="d-host"></div><div class="panel" id="d-connect"></div></div>`;
     el.dataset.built = "1";
   }
-  const ss = S.server, lat = (T && T.latest) || {}, srv = lat.server || {};
+  const ss = S.server, lat = (T && T.latest) || {}, srv = lat.server || {}, hist = (T && T.server) || [];
+  const tail = (k) => hist.slice(-60).map((s) => s[k]);
   const word = { up: "Serving", starting: "Starting", crashed: "Stopped", stopped: "Off" }[ss.state];
+  const dot = { up: "ok", starting: "run", crashed: "fail", stopped: "idle" }[ss.state];
   const model = (S.smoke && S.smoke.models && S.smoke.models[0]) || S.plan.choice.served_name || S.plan.choice.recipe_label;
-  const sub = ss.state === "up" ? `<b>${esc(model)}</b> is answering requests.` : ss.state === "starting"
-    ? `${esc(ss.phase || "Booting")}. First boot compiles kernels and can take a while; it's been ${ago(ss.started)}.`
-    : ss.state === "crashed" ? "The server process exited. The log usually says why; known problems are listed below." : "The model server is not running.";
+  const sub = ss.state === "up" ? `<b>${esc(model)}</b> is answering requests` : ss.state === "starting"
+    ? `${esc(ss.phase || "Booting")} · ${ago(ss.started)} so far. First boot compiles kernels; later boots are quick.`
+    : ss.state === "crashed" ? "The server exited. Known problems from its log are listed below." : "The model server is not running.";
   const btns = ss.attached ? `<button class="ghost" data-act="detach">Stop watching</button>` : ss.state === "up" || ss.state === "starting"
-    ? `<button class="btn alt" data-act="restart">Restart</button><button class="btn alt" data-act="stop">Stop</button>`
+    ? `<button class="ghost" data-act="restart">Restart</button><button class="ghost" data-act="stop">Stop</button>`
     : `<button class="btn go" data-act="start">Start the server</button>`;
-  patch($("#d-hero"), `<div class="status-hero"><h1 class="punch${slamOnce("dash")}">${ss.state === "up" ? `<span class="key">${word}</span>` : word}</h1>
-      <div><div class="endpoint">${esc(ss.url)} <button class="ghost small" data-copy="${esc(ss.url)}">Copy</button></div></div></div>
-    <p class="lede">${sub}</p><div class="row">${btns}</div>
-    ${ss.state !== "up" && !ss.attached ? `<details style="margin-top:16px"><summary>Already running vLLM yourself? Watch that server instead</summary><div class="row" style="margin-top:10px"><input id="attach-url" class="in" style="min-width:320px;padding:9px 11px;background:var(--bg-2);border:1px solid var(--line-2);border-radius:8px" placeholder="http://127.0.0.1:8000/v1"><button class="ghost" data-act="attach">Watch it</button></div></details>` : ""}`);
-  patch($("#d-problems"), ss.problems && ss.problems.length ? `<div class="sec"><h2>Problems found in the log</h2>${ss.problems.map(problemRow).join("")}</div>` : "");
-
-  const k = [
-    ["gen", "Output", "tok/s", srv.gen_tps, 1, "tps", true],
-    ["prompt", "Prompt read", "tok/s", srv.prompt_tps, 0, "prefill"],
-    ["run", "Requests", "", srv.running, 0, null],
-    ["wait", "Waiting", "", srv.waiting, 0, null],
-    ["kv", "KV cache used", "%", srv.kv_usage, 0, "kv"],
-    ["ttft", "First token", "s", srv.ttft, 2, "ttft"],
-    ["pc", "Prefix cache hits", "%", srv.prefix_hit, 0, "prefix"],
-    ["sd", "Draft accepted", "%", srv.spec_accept, 0, "spec"],
-  ];
-  const kpis = $("#d-kpis");
-  if (!kpis.dataset.built) {
-    kpis.innerHTML = `<div class="kpis">${k.map(([id, l, u, , , g, hero]) => `<div class="kpi${hero ? " hero" : ""}"><div class="n" data-k="kpi-${id}">–<small>${u}</small></div><div class="l">${g ? term(l, g) : l}</div></div>`).join("")}</div>`;
-    kpis.dataset.built = "1";
+  const ch = S.plan.choice;
+  const layout = [ch.recipe_label, ch.pp > 1 ? `PP=${ch.pp}` : ch.tp > 1 ? `TP=${ch.tp}` : "1 GPU", ch.p2p == null ? null : `P2P ${ch.p2p ? "on" : "off"}`].filter(Boolean).join(" · ");
+  const hero = $("#d-hero");
+  if (!hero.dataset.built) {
+    hero.innerHTML = `<div class="panel hero-panel"><div class="hero-l"><div id="dh-state"></div><h1 class="punch${slamOnce("dash")}" id="dh-word"></h1><p class="hero-sub" id="dh-sub"></p>
+        <div class="row" id="dh-meta"></div></div>
+      <div class="hero-r"><div class="eyebrow">Output speed ${info("tps")}</div><div class="hero-num"><span data-k="kpi-gen">–</span><small>tok/s</small></div><div id="dh-spark"></div></div></div>
+      <div id="dh-attach"></div>`;
+    hero.dataset.built = "1";
   }
-  for (const [id, , , v, d] of k) countTo($(`[data-k="kpi-${id}"]`), v, d);
+  patch($("#dh-state"), `<div class="row hero-top">${pill(dot, word)}<span class="muted">${esc(layout)}</span><span class="spacer"></span>${btns}</div>`);
+  patch($("#dh-word"), ss.state === "up" ? `<span class="key">${word}</span>` : word);
+  patch($("#dh-sub"), sub);
+  patch($("#dh-meta"), `<span class="chip mono">${esc(ss.url)}</span><button class="ghost small" data-copy="${esc(ss.url)}">Copy URL</button>`);
+  countTo($('[data-k="kpi-gen"]'), srv.gen_tps, 1);
+  patch($("#dh-spark"), spark(tail("gen_tps"), "var(--key)", 44));
+  patch($("#dh-attach"), ss.state !== "up" && !ss.attached ? `<details class="attach"><summary>Already running vLLM yourself? Watch that server instead</summary><div class="row" style="margin-top:10px"><input id="attach-url" class="in" placeholder="http://127.0.0.1:8000/v1"><button class="ghost" data-act="attach">Watch it</button></div></details>` : "");
+  patch($("#d-problems"), ss.problems && ss.problems.length ? `<div class="panel warn-panel"><div class="eyebrow">Problems found in the log</div>${ss.problems.map(problemRow).join("")}</div>` : "");
 
-  const sh = (T && T.server) || [];
-  patch($("#d-c1"), `<p class="chart-title">Output speed</p><p class="chart-sub">Tokens written per second, all users together.</p>` +
-    lineChart("c-gen", { label: "Output tokens per second", series: [{ name: "Output tok/s", color: "var(--s1)", pts: sh.map((s) => [s.t, s.gen_tps]) }], yFmt: (v) => fmt(v, v < 10 ? 1 : 0) }));
-  patch($("#d-c2"), `<p class="chart-title">Prompt reading speed</p><p class="chart-sub">Prompt tokens processed per second (prefill).</p>` +
-    lineChart("c-prompt", { label: "Prompt tokens per second", series: [{ name: "Prompt tok/s", color: "var(--s3)", pts: sh.map((s) => [s.t, s.prompt_tps]) }] }));
+  const tiles = [
+    ["prompt", "Prompt reading", "tok/s", srv.prompt_tps, 0, "prefill", "prompt_tps", "var(--s3)", "Prefill, all users"],
+    ["run", "Active requests", "", srv.running, 0, null, "running", "var(--s1)", `${fmt(srv.waiting)} waiting in line`],
+    ["ttft", "First token", "s", srv.ttft, 2, "ttft", "ttft", "var(--s1)", "Average, last few seconds"],
+    ["kv", "KV cache", "%", srv.kv_usage, 0, "kv", "kv_usage", "var(--s3)", "of GPU cache in use"],
+    ["pc", "Prefix cache hits", "%", srv.prefix_hit, 0, "prefix", "prefix_hit", "var(--s1)", "Reused prompt work"],
+    ["sd", "Draft accepted", "%", srv.spec_accept, 0, "spec", "spec_accept", "var(--s3)", "MTP drafts kept"],
+  ];
+  const tl = $("#d-tiles");
+  if (!tl.dataset.built) {
+    tl.innerHTML = tiles.map(([id, l, u, , , g]) => `<div class="tile"><div class="tile-l">${l}${g ? " " + info(g) : ""}</div>
+      <div class="tile-n"><span data-k="kpi-${id}">–</span><small>${u}</small></div><div class="tile-s" id="ts-${id}"></div><div class="tile-sp" id="tp-${id}"></div></div>`).join("");
+    tl.dataset.built = "1";
+  }
+  for (const [id, , , v, d, , key, color, note] of tiles) {
+    countTo($(`[data-k="kpi-${id}"]`), v, d);
+    patch($("#ts-" + id), esc(note));
+    patch($("#tp-" + id), spark(tail(key), color));
+  }
+
+  patch($("#d-c1"), `<div class="panel-head"><h2>Output speed</h2><span class="muted">tok/s, last 5 min</span></div>` +
+    lineChart("c-gen", { label: "Output tokens per second", area: true, height: 200, series: [{ name: "Output tok/s", color: "var(--s1)", pts: hist.map((s) => [s.t, s.gen_tps]) }], yFmt: (v) => fmt(v, v < 10 ? 1 : 0) }));
+  patch($("#d-c2"), `<div class="panel-head"><h2>Prompt reading</h2><span class="muted">tok/s, last 5 min</span></div>` +
+    lineChart("c-prompt", { label: "Prompt tokens per second", area: true, height: 200, series: [{ name: "Prompt tok/s", color: "var(--s3)", pts: hist.map((s) => [s.t, s.prompt_tps]) }] }));
 
   const gpus = lat.gpus || [];
   const names = Object.fromEntries((S.profile.gpus || []).map((g) => [g.index, g]));
-  const used = (S.plan.choice.hip_visible_devices || "").split(",").filter(Boolean).map(Number);
-  patch($("#d-gpus"), gpus.length ? `<div class="gpu-row head"><div>Card</div><div>Busy</div><div>Memory</div><div>Temp</div><div>Power</div><div>Clocks</div></div>` +
-    gpus.map((g) => {
-      const n = names[g.index] || {};
-      const memPct = g.vram_total ? (100 * g.vram_used) / g.vram_total : 0;
-      const hot = (g.temp_junction || g.temp_edge || 0) >= 95;
-      return `<div class="gpu-row"><div class="name">GPU ${g.index}<small>${esc(n.name || "")}${used.length && !used.includes(g.index) ? " · not used" : ""}</small></div>
-        <div><span class="mval">${fmt(g.util)}%</span><div class="meter"><i style="width:${Math.min(100, g.util || 0)}%"></i></div></div>
-        <div><span class="mval">${fmt(g.vram_used, 1)} / ${fmt(g.vram_total, 0)} GB</span><div class="meter mem"><i style="width:${memPct}%"></i></div></div>
-        <div class="mval${hot ? " temp-hot" : ""}">${fmt(g.temp_junction || g.temp_edge)}°C${hot ? " hot" : ""}${g.temp_mem ? `<br><span class="muted">mem ${fmt(g.temp_mem)}°C</span>` : ""}</div>
-        <div class="mval">${fmt(g.power)} W<br><span class="muted">cap ${fmt(g.power_cap)} W</span></div>
-        <div class="mval">${fmt(g.sclk)} MHz<br><span class="muted">mem ${fmt(g.mclk)} MHz</span></div></div>`;
-    }).join("") : `<p class="empty">No GPU readings yet.</p>`);
+  const used = (ch.hip_visible_devices || "").split(",").filter(Boolean).map(Number);
+  const gh = (T && T.gpu) || [];
+  const totPow = gpus.reduce((a, g) => a + (g.power || 0), 0);
+  patch($("#d-gpu-sum"), gpus.length ? `${gpus.length} cards · ${fmt(totPow)} W total · hottest ${fmt(Math.max(...gpus.map((g) => g.temp_junction || g.temp_edge || 0)))}°C` : "");
+  patch($("#d-gpus"), gpus.length ? gpus.map((g) => {
+    const n = names[g.index] || {};
+    const mem = g.vram_total ? (100 * g.vram_used) / g.vram_total : 0;
+    const pw = g.power_cap ? (100 * (g.power || 0)) / g.power_cap : 0;
+    const t = g.temp_junction || g.temp_edge;
+    const hot = (t || 0) >= 95;
+    const idle = used.length && !used.includes(g.index);
+    const utilHist = gh.slice(-60).map((s) => ((s.gpus || []).find((x) => x.index === g.index) || {}).util);
+    return `<div class="gpu-card${idle ? " idle" : ""}"><div class="gpu-top"><div><div class="gpu-name">GPU ${g.index}</div><div class="muted small-t">${esc(n.name || "")}</div></div>
+        ${idle ? `<span class="pill idle">Not used</span>` : `<span class="pill ok">In use</span>`}</div>
+      <div class="gpu-mid"><div class="ring-wrap">${ring(g.util, "var(--s1)")}<div class="ring-n">${fmt(g.util)}<small>%</small></div><div class="ring-l">busy</div></div>
+        <div class="gpu-stats">
+          <div class="stat"><div class="stat-h"><span>Memory</span><b>${fmt(g.vram_used, 1)} <span class="muted">/ ${fmt(g.vram_total, 0)} GB</span></b></div><div class="meter mem"><i style="width:${mem}%"></i></div></div>
+          <div class="stat"><div class="stat-h"><span>Power</span><b>${fmt(g.power)} <span class="muted">/ ${fmt(g.power_cap)} W</span></b></div><div class="meter pow"><i style="width:${pw}%"></i></div></div>
+          <div class="stat-row"><span><span class="muted">Temp</span> <b class="${hot ? "temp-hot" : ""}">${hot ? "! " : ""}${fmt(t)}°C</b></span><span><span class="muted">Mem</span> <b>${fmt(g.temp_mem)}°C</b></span><span><span class="muted">Clock</span> <b>${fmt(g.sclk)}</b></span></div>
+        </div></div>
+      <div class="gpu-spark">${spark(utilHist, "var(--s1)", 28)}</div></div>`;
+  }).join("") : `<p class="empty">No GPU readings yet.</p>`);
+
   const h = lat.host || {};
-  patch($("#d-host"), `<div class="kpis"><div class="kpi"><div class="n">${fmt(h.cpu)}<small>%</small></div><div class="l">CPU busy</div></div>
-    <div class="kpi"><div class="n">${fmt(h.ram_used)}<small>/ ${fmt(h.ram_total)} GB</small></div><div class="l">RAM used${S.plan.choice.ple ? ` (the ${term("PLE table", "ple")} lives here)` : ""}</div></div>
-    <div class="kpi"><div class="n">${fmt(srv.requests_done)}</div><div class="l">Requests served</div></div></div>`);
+  const ramPct = h.ram_total ? (100 * h.ram_used) / h.ram_total : 0;
+  patch($("#d-host"), `<div class="panel-head"><h2>This machine</h2><span class="muted">${esc(S.label)}</span></div>
+    <div class="stat"><div class="stat-h"><span>CPU</span><b>${fmt(h.cpu)}%</b></div><div class="meter"><i style="width:${h.cpu || 0}%"></i></div></div>
+    <div class="stat"><div class="stat-h"><span>RAM${ch.ple ? ` (holds the PLE table ${info("ple")})` : ""}</span><b>${fmt(h.ram_used)} <span class="muted">/ ${fmt(h.ram_total)} GB</span></b></div><div class="meter mem"><i style="width:${ramPct}%"></i></div></div>
+    <div class="stat-row big"><span><span class="muted">Requests served</span> <b>${fmt(srv.requests_done)}</b></span><span><span class="muted">Avg request</span> <b>${srv.e2e == null ? "–" : fmt(srv.e2e, 1) + " s"}</b></span></div>`);
   const base = ss.url.replace(/\/$/, "");
-  const name = model;
-  patch($("#d-connect"), `<p class="muted" style="margin:0 0 6px">Any app that speaks the OpenAI API can use this. Give it the base URL and model name; no API key needed.</p>
-    <div class="cols"><div>${cmdBlock(`curl ${base}/chat/completions \\\n  -H 'Content-Type: application/json' \\\n  -d '{"model":"${name}","messages":[{"role":"user","content":"Hello!"}]}'`)}</div>
-    <div>${cmdBlock(`from openai import OpenAI\nclient = OpenAI(base_url="${base}", api_key="not-used")\nr = client.chat.completions.create(model="${name}",\n    messages=[{"role": "user", "content": "Hello!"}])\nprint(r.choices[0].message.content)`)}</div></div>`);
+  const snip = ui.snip || "curl";
+  const code = snip === "curl"
+    ? `curl ${base}/chat/completions \\\n  -H 'Content-Type: application/json' \\\n  -d '{"model":"${model}","messages":[{"role":"user","content":"Hello!"}]}'`
+    : `from openai import OpenAI\nclient = OpenAI(base_url="${base}", api_key="not-used")\nr = client.chat.completions.create(\n    model="${model}",\n    messages=[{"role": "user", "content": "Hello!"}])\nprint(r.choices[0].message.content)`;
+  patch($("#d-connect"), `<div class="panel-head"><h2>Connect an app</h2><div class="seg">${["curl", "python"].map((k) => `<button class="${snip === k ? "on" : ""}" data-act="snip" data-arg="${k}">${k === "curl" ? "curl" : "Python"}</button>`).join("")}</div></div>
+    <p class="muted" style="margin:0 0 8px">Any OpenAI-compatible app works: give it this base URL and the model name <b>${esc(model)}</b>. No API key needed.</p>${cmdBlock(code)}`);
 }
+actions.snip = async (k) => { ui.snip = k; renderDash(); };
 
 /* ======================================================================= CHAT */
 function renderChat() {

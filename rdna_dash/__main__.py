@@ -15,7 +15,7 @@ import sys
 
 from . import __version__, bench, profile, store, tuning
 
-MARK = {"ok": "  ok  ", "info": " info ", "warn": " WARN ", "fail": " FAIL "}
+MARK = {"ok": "  ok  ", "info": " info ", "rec": " TUNE ", "warn": " WARN ", "fail": " FAIL "}
 
 
 def doctor(args):
@@ -28,7 +28,7 @@ def doctor(args):
     print("  Host   %s | %s | %.0f GB RAM | ROCm %s\n" % (s["os"], s["cpu"], s["ram_gb"] or 0, s["rocm"]))
     for c in plan["checks"]:
         print("[%s] %s" % (MARK[c["level"]], c["title"]))
-        if c["level"] in ("warn", "fail") or args.verbose:
+        if c["level"] in ("warn", "fail", "rec") or args.verbose:
             print("         %s" % c["detail"])
             for f in c["fix"]:
                 print("           $ %s" % f)

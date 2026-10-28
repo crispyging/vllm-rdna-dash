@@ -105,7 +105,7 @@ class TuningTest(unittest.TestCase):
         self.assertFalse(p["launch"]["spec"]["publish"].startswith("127.0.0.1:"))
 
     def test_ecc_states(self):
-        self.assertEqual(levels(plan(self.base))["ecc"], "info")
+        self.assertEqual(levels(plan(self.base))["ecc"], "rec")
         prof = copy.deepcopy(self.base)
         prof["gpus"][1]["ecc_errors"] = {"ce": 2, "ue": 0}
         self.assertEqual(levels(plan(prof))["ecc"], "warn")
@@ -116,6 +116,19 @@ class TuningTest(unittest.TestCase):
         for g in prof["gpus"]:
             g["vram_gb"] = 31.98
         self.assertEqual(levels(plan(prof))["ecc"], "ok")
+
+    def test_power_cap_recommended_at_180(self):
+        p = plan(self.base)
+        self.assertEqual(levels(p)["power"], "rec")
+        tune = [s for s in p["steps"] if s["id"] == "tune"][0]
+        self.assertEqual(sorted(tune["pending"]), ["ecc", "power"])
+        self.assertTrue(any("v620_toolbox" in f for f in [c for c in p["checks"] if c["id"] == "power"][0]["fix"]))
+        prof = copy.deepcopy(self.base)
+        for g in prof["gpus"]:
+            g.update(power_cap_w=180, power_cap_min_w=120, vram_gb=31.98)
+        p = plan(prof)
+        self.assertEqual(levels(p)["power"], "ok")
+        self.assertEqual([s for s in p["steps"] if s["id"] == "tune"][0]["pending"], [])
 
     def test_step_scripts_never_use_sudo(self):
         for prefs in ({}, {"recipe": "qwen38-27b-awq"}, {"path": "venv", "recipe": "qwen38-27b-awq"}):

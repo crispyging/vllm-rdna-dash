@@ -71,7 +71,19 @@ It reports TTFT p50/p95, prefill tok/s, per-user decode tok/s, inter-token laten
 
 **Topology.** Draws each GPU's PCIe path (root port, PLX/Broadcom switches, the on-card bridge), its link gen and width, NUMA node and BAR size. For every pair it shows the path type, hop count, and whether the driver created a KFD P2P link. "Measure" runs a PyTorch peer-copy test (in the venv or the image), drawn as a heatmap; the result feeds the P2P setting. If `rocm-bandwidth-test` is installed it runs that too, and raw `amd-smi topology` output is one click away.
 
-**ECC (V620 / W6800).** Shows whether ECC is on, whether it's half-way through the two-reboot switch, or off, and refuses to suggest turning it off when a card already reports ECC errors. The script does the bootloader work:
+**Recommended V620 tuning: ECC off and a 180 W cap.** Both are recommended by default and shown as a setup step right after the host check. They need root and reboots, so setup carries on without them.
+
+The 180 W cap keeps the cards much cooler and quieter, with little speed loss on memory-bound inference:
+
+```bash
+sudo ./tools/power.sh status
+sudo ./tools/power.sh 180 --persist   # apply now and at every boot
+sudo ./tools/power.sh --remove        # back to stock on the next reboot
+```
+
+When the driver enforces the 250 W VBIOS floor, the dashboard and the script point you to the [v620_toolbox](https://github.com/blivioniag/v620_toolbox) powerfix first.
+
+For ECC, the dashboard shows whether it's on, half-way through the two-reboot switch, or off. It never recommends turning it off when a card already reports ECC errors. The script does the bootloader work:
 
 ```bash
 sudo ./tools/ecc.sh status
@@ -136,6 +148,7 @@ rdna_dash/
   web/          the UI (no build step, no CDN scripts)
 recipes/        built-in recipes
 tools/ecc.sh    ECC on/off/status
+tools/power.sh  V620 power cap (180 W default), optional boot unit
 ```
 
 Stdlib only. Tests: `python -m unittest discover -s tests`.

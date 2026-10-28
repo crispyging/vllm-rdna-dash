@@ -155,7 +155,7 @@ class TuningTest(unittest.TestCase):
         prof["runtime"] = {"container": True}
         p = plan(prof, {"root": "/srv/vllm-rdna", "recipe": "qwen38-27b-awq"})
         step = [s for s in p["steps"] if s["id"] == "model"][0]
-        self.assertIn(os.path.join("/srv/vllm-rdna", "hf-cache") + "':/root/.cache/huggingface", step["script"])
+        self.assertIn(os.path.join("/srv/vllm-rdna", "hf-cache") + ":/root/.cache/huggingface", step["script"].replace("'", ""))
         self.assertNotIn("--local-dir", step["script"])
 
     def test_step_scripts_never_use_sudo(self):

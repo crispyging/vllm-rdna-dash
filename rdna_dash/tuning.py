@@ -405,11 +405,12 @@ def build_plan(profile, prefs=None, registry=None):
             vid, ren = (g.get("video") or ["?"])[0], (g.get("render") or ["?"])[0]
             checks.append(check("kfd-perm", "fail", "The dashboard container cannot open /dev/kfd",
                                 "The GPU devices belong to group %s (render) and %s (video) on this host, but the container "
-                                "is not in them. Put those numbers in ~/vllm-rdna/.env (rerunning the installer does this) "
-                                "and recreate the container. Rootless Podman uses group_add: [keep-groups] instead; SELinux "
-                                "hosts also need security_opt label=disable." % (ren, vid),
-                                ["sed -i -e 's/^VIDEO_GID=.*/VIDEO_GID=%s/' -e 's/^RENDER_GID=.*/RENDER_GID=%s/' ~/vllm-rdna/.env" % (vid, ren),
-                                 "cd ~/vllm-rdna && docker compose up -d --force-recreate"],
+                                "is not in them. Put those numbers in the .env next to compose.yml, or pass them to "
+                                "docker run with --group-add, and recreate the container. Rootless Podman uses "
+                                "group_add: [keep-groups] instead; SELinux hosts also need security_opt label=disable." % (ren, vid),
+                                ["# in the folder that holds compose.yml",
+                                 "printf 'VIDEO_GID=%s\\nRENDER_GID=%s\\n' >> .env" % (vid, ren),
+                                 "docker compose up -d --force-recreate"],
                                 "troubleshooting/vllm.html#failed-to-infer-device-type--amdsmi_status_not_init"))
     elif missing:
         checks.append(check("groups", "fail", "Not in the %s group%s" % (" and ".join(missing), "s" if len(missing) > 1 else ""),

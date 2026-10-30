@@ -13,3 +13,23 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m unittest discover -s tests -v
+
+  # Runs the two install commands from the README with no settings. The runner has no GPU,
+  # so only the --device flags and the devices line are removed.
+  docker-install:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t ghcr.io/crispyging/vllm-rdna-dash:latest .
+      - name: docker run line from the README
+        run: |
+          sed -n '/^docker run -d/,/vllm-rdna-dash:latest$/p' README.md | sed 's/--device [^ ]* //g' > run.sh
+          sh -x run.sh
+          curl -fsS --retry 30 --retry-delay 1 --retry-all-errors -o /dev/null http://127.0.0.1:7860/
+          docker rm -f vllm-rdna-dash
+      - name: compose.yml with no .env
+        run: |
+          sed -i '/^    devices:/d' compose.yml
+          docker compose up -d
+          curl -fsS --retry 30 --retry-delay 1 --retry-all-errors -o /dev/null http://127.0.0.1:7860/
+          docker compose down

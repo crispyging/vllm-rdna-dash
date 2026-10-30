@@ -1,10 +1,9 @@
 # vllm-rdna-dash: the dashboard as a container, reachable from your whole network.
 #
 #   curl -fsSL https://raw.githubusercontent.com/crispyging/vllm-rdna-dash/main/compose.yml -o compose.yml
-#
-# Not using install.sh (Arcane, Portainer, Dockge...)? Set VIDEO_GID and RENDER_GID to the
-# plain host numbers from `getent group video render` (third field). See the README.
 #   docker compose up -d                 # or: podman compose up -d
+#
+# Every setting is optional: put it in a .env next to this file. See the README.
 #
 # Then open http://your-gpu-box:7860 (its name or IP) from any machine on your network.
 #
@@ -22,9 +21,9 @@ services:
     network_mode: host
     # Lets the dashboard read the GPUs and check they are usable.
     devices: [/dev/kfd, /dev/dri]
-    # Numeric host GIDs: the image has no `render` group, and names would resolve inside the image,
-    # not on the host. install.sh fills VIDEO_GID/RENDER_GID in .env; find yours with
-    #   getent group video render
+    # The container runs as root, so rootful Docker opens the GPUs with these defaults. If the
+    # dashboard says it cannot open /dev/kfd, set VIDEO_GID/RENDER_GID in .env to the numbers it shows.
+    # Numbers only: names would resolve inside the image, not on the host.
     group_add: ["${VIDEO_GID:-44}", "${RENDER_GID:-992}"]          # rootless Podman: [keep-groups]
     security_opt: [label=disable]        # SELinux hosts (Fedora, RHEL)
     environment:

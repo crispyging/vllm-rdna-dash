@@ -20,6 +20,8 @@ COPY rdna_dash ./rdna_dash
 COPY recipes ./recipes
 COPY tools ./tools
 ENV RDNA_DASH_IN_CONTAINER=1 PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+# Where a plain `docker run` keeps its data; compose.yml overrides these when DATA is set.
+ENV RDNA_DASH_ROOT=/srv/vllm-rdna XDG_CONFIG_HOME=/srv/vllm-rdna/dash/config XDG_STATE_HOME=/srv/vllm-rdna/dash/state
 EXPOSE 7860
 ENTRYPOINT ["python", "-m", "rdna_dash"]
 CMD ["--host", "0.0.0.0", "--port", "7860"]

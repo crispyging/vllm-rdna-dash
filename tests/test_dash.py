@@ -50,6 +50,64 @@ class TuningTest(unittest.TestCase):
         p = tuning.settle_port_check(plan(prof), own_server=True)
         self.assertNotIn("port", levels(p))
 
+    def test_local_model_skips_download_and_keeps_ple(self):
+        p = plan(self.base, {"model_path": "/data/mine"})
+        self.assertIn("/data/mine", p["launch"]["command"])
+        steps = {s["id"]: s for s in p["steps"]}
+        self.assertEqual(steps["model"]["title"], "Download the PLE table")
+        self.assertNotIn("/data/mine", steps["model"]["script"])
+        self.assertIn("model_path", levels(p))
+
+    def test_extras_reach_both_launches(self):
+        for path in ("venv", "container"):
+            p = plan(self.base, {"path": path, "kv_offload_gb": 64, "extra_args": "--max-num-seqs 4", "extra_env": "FOO=bar"})
+            if p["choice"]["path"] != path:
+                continue
+            text = p["launch"]["command"] + str(p["launch"].get("spec"))
+            self.assertIn("--kv-offloading-size", text)
+            self.assertIn("--max-num-seqs", text)
+            self.assertIn("FOO", text)
+
+    def test_loader_env_is_refused(self):
+        p = plan(self.base, {"extra_env": "LD_PRELOAD=/x.so\nGOOD=1"})
+        self.assertNotIn("LD_PRELOAD", p["launch"]["command"])
+        self.assertIn("GOOD=1", p["launch"]["command"])
+        self.assertEqual(levels(p)["extra"], "warn")
+
+    def test_find_local_models_in_folders_and_hf_cache(self):
+        from rdna_dash import profile
+        with tempfile.TemporaryDirectory() as d:
+            for sub in ("models/mine", "hf-cache/hub/models--org--name/snapshots/abc", "models/not-a-model"):
+                os.makedirs(os.path.join(d, sub))
+            for sub in ("models/mine", "hf-cache/hub/models--org--name/snapshots/abc"):
+                for f in ("config.json", "m.safetensors"):
+                    open(os.path.join(d, sub, f), "w").close()
+            names = {m["name"] for m in profile.find_local_models(d)}
+            self.assertEqual(names & {"mine", "org/name", "not-a-model"}, {"mine", "org/name"})
+
+    @unittest.skipUnless(hasattr(os, "killpg"), "needs POSIX process groups")
+    def test_cancel_kills_a_child_that_ignores_sigterm(self):
+        from rdna_dash import jobs
+        with tempfile.TemporaryDirectory() as d:
+            os.environ["XDG_STATE_HOME"] = d
+            runner = jobs.Runner()
+            job = runner.start("t", "trap '' TERM; sleep 120 & wait")
+            time.sleep(0.3)
+            jobs.KILL_AFTER = 1
+            stopped = jobs.stop_group.__defaults__
+            jobs.stop_group.__defaults__ = (1,)
+            self.addCleanup(setattr, jobs.stop_group, "__defaults__", stopped)
+            self.assertTrue(runner.cancel(job.id))
+            job.proc.wait(timeout=5)
+            self.assertFalse(jobs.group_alive(job.proc.pid))
+
+    def test_saved_running_step_with_no_process_is_not_running(self):
+        app = server.App.__new__(server.App)
+        app.runner = type("R", (), {"jobs": {}})()
+        self.assertEqual(server.App._live_status(app, {"job": "gone", "pid": None}), "failed")
+        app.runner.jobs["x"] = type("J", (), {"status": "cancelled"})()
+        self.assertEqual(server.App._live_status(app, {"job": "x"}), "cancelled")
+
     def test_attach_url_forms(self):
         self.assertEqual(server.attach_url("8000"), "http://127.0.0.1:8000/v1")
         self.assertEqual(server.attach_url("http://10.0.0.5:8000/"), "http://10.0.0.5:8000/v1")

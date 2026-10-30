@@ -198,8 +198,9 @@ const actions = {
   async savePrefs() {
     const f = $("#change-form"); const v = (n) => f.elements[n].value;
     await api.post("/api/prefs", { recipe: v("recipe"), path: v("path"), port: v("port") ? Number(v("port")) : null, max_len: v("max_len") ? Number(v("max_len")) : null,
-      root: v("root") || null, ple: v("ple"), lan: f.elements.lan.checked, label: v("label") });
-    ui.change = false; toast("Saved. The plan was re-tuned."); await refresh(); renderSetup(true);
+      root: v("root") || null, ple: v("ple"), lan: f.elements.lan.checked, label: v("label"),
+      model_path: v("model_path").trim() || null, kv_offload_gb: v("kv_offload_gb") ? Number(v("kv_offload_gb")) : null, extra_args: v("extra_args").trim() || null, extra_env: v("extra_env").trim() || null });
+    ui.change = false; toast(S.server.state === "up" && !S.server.attached ? "Saved. Restart the server to apply it." : "Saved. The plan was re-tuned."); await refresh(); renderSetup(true);
   },
   async start() { await api.post("/api/server/start"); toast("Starting the server"); await refresh(); },
   async stop() { if (!confirm("Stop the model server?")) return; await api.post("/api/server/stop"); toast("Stopped"); await refresh(); },
@@ -374,8 +375,12 @@ function changeForm() {
   const rec = P.registry.map((r) => `<option value="${esc(r.id)}" ${pr.recipe === r.id ? "selected" : ""} ${r.fits ? "" : ""}>${esc(r.label)}${r.fits ? "" : " (doesn't fit: " + esc(r.why) + ")"}${r.verify ? " · needs verify" : ""}</option>`).join("");
   return `<form id="change-form" class="form" onsubmit="return false" style="margin-bottom:22px">
     <div class="field"><label>Model and layout</label><select name="recipe"><option value="auto">Best fit (recommended)</option>${rec}</select></div>
+    <div class="field"><label>Model already on this box</label><input name="model_path" list="local-models" placeholder="Download the recipe's model" value="${esc(pr.model_path || "")}"><datalist id="local-models">${(P.local_models || []).map((m) => `<option value="${esc(m.path)}">${esc(m.name)} · ${fmt(m.size_gb)} GB</option>`).join("")}</datalist><div class="hint">${(P.local_models || []).length ? `Found ${P.local_models.length} on this box: click the field to pick one, or` : "None found yet:"} paste a folder with config.json and .safetensors. Nothing gets downloaded. Keep the recipe above matched to it.</div></div>
     <div class="field"><label>How to install</label><select name="path">${[["auto", "Best fit (recommended)"], ["container", "Container (Docker / Podman)"], ["venv", "Build on the host"]].map(([v, l]) => `<option value="${v}" ${pr.path === v ? "selected" : ""}>${l}</option>`).join("")}</select></div>
     <div class="field"><label>${term("PLE table", "ple")} (Flash-Next)</label><select name="ple">${["auto", "int4", "int4-disk", "bf16"].map((v) => `<option ${pr.ple === v ? "selected" : ""}>${v}</option>`).join("")}</select></div>
+    <div class="field"><label>KV offload to CPU memory (GB)</label><input name="kv_offload_gb" type="number" min="0" placeholder="off" value="${pr.kv_offload_gb || ""}"><div class="hint">Holds more context, but can slow decoding down.</div></div>
+    <div class="field"><label>Extra vLLM flags</label><input name="extra_args" placeholder="--max-num-seqs 4" value="${esc(pr.extra_args || "")}"></div>
+    <div class="field"><label>Extra environment</label><textarea name="extra_env" class="in" rows="3" placeholder="KEY=VALUE, one per line">${esc(pr.extra_env || "")}</textarea><div class="hint">For settings without a field here, such as VLLM_TUNED_CONFIG_FOLDER.</div></div>
     <div class="field"><label>Port</label><input name="port" type="number" min="1" max="65535" placeholder="${P.choice.port}" value="${pr.port || ""}"></div>
     <div class="field"><label>Max context (tokens)</label><input name="max_len" type="number" min="1024" step="1024" placeholder="model default" value="${pr.max_len || ""}"></div>
     <div class="field"><label>Install folder</label><input name="root" placeholder="${esc(P.paths.root)}" value="${esc(pr.root || "")}"><div class="hint">Venv, fork checkout, models and caches go here.</div></div>

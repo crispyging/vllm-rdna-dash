@@ -44,6 +44,7 @@ def demo_profile():
         "tools": {"python312": "/usr/bin/python3.12", "uv": None, "git": "/usr/bin/git", "curl": "/usr/bin/curl"},
         "env": {"hf_token_set": False},
         "servers": [],
+        "local_models": [{"name": "my-org/my-finetune", "path": "/data/models/my-finetune", "size_gb": 78.3}],
     }
 
 

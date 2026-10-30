@@ -16,6 +16,38 @@ import uuid
 from . import store
 
 
+KILL_AFTER = 10  # seconds between SIGTERM and SIGKILL when a step is cancelled
+
+
+def group_alive(pid):
+    """Is this process group still one of our step shells? Guards against a reused pid."""
+    if not pid:
+        return False
+    try:
+        if os.getpgid(pid) != pid:
+            return False
+        with open("/proc/%d/cmdline" % pid, "rb") as f:
+            return b"bash" in f.read()
+    except (OSError, AttributeError):
+        return False
+
+
+def stop_group(pid, wait=KILL_AFTER):
+    """SIGTERM the group, then SIGKILL whatever ignored it. Never blocks the caller."""
+    try:
+        os.killpg(pid, signal.SIGTERM)
+    except OSError:
+        return
+
+    def finish():
+        time.sleep(wait)
+        try:
+            os.killpg(pid, signal.SIGKILL)
+        except OSError:
+            pass
+    threading.Thread(target=finish, daemon=True).start()
+
+
 class Job(object):
     def __init__(self, step, script):
         self.id = uuid.uuid4().hex[:10]
@@ -100,10 +132,7 @@ class Runner(object):
         if not job or job.status != "running":
             return False
         job.status = "cancelled"
-        try:
-            os.killpg(job.proc.pid, signal.SIGTERM)
-        except Exception:
-            pass
+        stop_group(job.proc.pid)
         return True
 
 

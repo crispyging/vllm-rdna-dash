@@ -22,7 +22,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import __version__, bench, logdoctor, profile as profiler, store, topology, tuning
-from .jobs import DemoRunner, Runner
+from .jobs import DemoRunner, Runner, group_alive, stop_group
 from .serve import ServeManager
 from .telemetry import GpuReader, HostReader, Sampler
 
@@ -166,6 +166,8 @@ class App(object):
                     status = "todo"  # plan changed since this ran
                 else:
                     status = rec.get("status") or "todo"
+                if status == "running":
+                    status = self._live_status(rec)
                 if self.runner.current and self.runner.current.step == s["id"] and self.runner.current.status == "running":
                     status = "running"
             out[s["id"]] = {"status": status, "job": rec.get("job"), "at": rec.get("at")}
@@ -173,13 +175,43 @@ class App(object):
                 out[s["id"]]["progress"] = self.download_progress(self.runner.current)
         return out
 
+    def _live_status(self, rec):
+        """A saved "running" is only true while the job really runs: the dashboard may have
+        restarted since, and a cancelled job may take a moment to die."""
+        job = self.runner.jobs.get(rec.get("job"))
+        if job:
+            return {"ok": "done"}.get(job.status, job.status)
+        return "running" if group_alive(rec.get("pid")) else "failed"
+
+    def _orphan(self):
+        """A step still running from before the dashboard restarted."""
+        for sid, rec in store.load_state()["steps"].items():
+            if rec.get("status") == "running" and rec.get("job") not in self.runner.jobs and group_alive(rec.get("pid")):
+                return sid
+        return None
+
+    def cancel_job(self, job_id):
+        if self.runner.cancel(job_id):
+            return True
+        for sid, rec in store.load_state()["steps"].items():
+            if rec.get("job") == job_id and rec.get("status") == "running":
+                if group_alive(rec.get("pid")):
+                    stop_group(rec["pid"])
+                store.update_state(lambda st: st["steps"].__setitem__(sid, dict(rec, status="cancelled")))
+                return True
+        return False
+
     def run_step(self, sid):
         step = next((s for s in self.plan["steps"] if s["id"] == sid), None)
         if not step:
             raise KeyError(sid)
         if step["kind"] == "run":
+            orphan = self._orphan()
+            if orphan:
+                raise RuntimeError("Another step is still running: %s. Cancel it first." % orphan)
             job = self.runner.start(sid, step["script"])
-            store.update_state(lambda st: st["steps"].__setitem__(sid, {"status": "running", "job": job.id,
+            pid = job.proc.pid if job.proc else None
+            store.update_state(lambda st: st["steps"].__setitem__(sid, {"status": "running", "job": job.id, "pid": pid,
                                                                          "hash": _hash(step["script"]), "at": time.time()}))
             return {"job": job.info()}
         if step["kind"] == "write":
@@ -677,7 +709,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, a.run_step(sid))
         m = re.match(r"^/api/jobs/(\w+)/cancel$", path)
         if m:
-            return self._send(200, {"ok": a.runner.cancel(m.group(1))})
+            return self._send(200, {"ok": a.cancel_job(m.group(1))})
         if path == "/api/server/start":
             return self._send(200, a.serve.start(a.plan))
         if path == "/api/server/stop":

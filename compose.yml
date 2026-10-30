@@ -38,6 +38,7 @@ services:
       RDNA_DASH_LABEL: ${BOX_NAME:-}         # name shown in the dashboard (default: hostname)
       RDNA_DASH_ENGINE: ${ENGINE:-docker}    # docker | podman | podman-rootless
       HF_TOKEN: ${HF_TOKEN:-}                # only for gated models
+      RDNA_DASH_MODEL_DIRS: ${MODELS_DIR:-}  # a folder of models outside DATA; also add it under volumes, same path both sides
       # Same numbers as group_add above; used for the vLLM container the dashboard starts.
       VIDEO_GID: ${VIDEO_GID:-44}
       RENDER_GID: ${RENDER_GID:-992}

@@ -344,10 +344,62 @@ def probe_servers(ports=None, timeout=0.6):
     return out
 
 
+def _model_entry(path, name):
+    try:
+        files = os.listdir(path)
+    except OSError:
+        return None
+    weights = [f for f in files if f.endswith(".safetensors")]
+    if "config.json" not in files or not weights:
+        return None
+    size = 0
+    for f in weights:
+        try:
+            size += os.path.getsize(os.path.join(path, f))
+        except OSError:
+            pass
+    return {"name": name, "path": path, "size_gb": round(size / 1e9, 1)}
+
+
+def find_local_models(data_dir=None):
+    """Checkpoints already on this box: plain folders under <root>/models and Hugging Face caches.
+    RDNA_DASH_MODEL_DIRS adds more places, separated by ':'. A folder is a model when it has
+    config.json and .safetensors weights."""
+    home = os.path.expanduser("~")
+    roots = [os.path.join(d, "models") for d in (data_dir, os.path.join(home, "vllm-rdna")) if d]
+    roots += [d for d in os.environ.get("RDNA_DASH_MODEL_DIRS", "").split(":") if d]
+    hubs = [os.path.join(os.environ.get("HF_HOME") or os.path.join(home, ".cache", "huggingface"), "hub")]
+    hubs += [os.path.join(d, "hf-cache", "hub") for d in (data_dir,) if d]
+    hubs += [os.path.join(d, "hub") for d in roots]
+    hubs += roots
+    found, seen = [], set()
+
+    def add(path, name):
+        real = os.path.realpath(path)
+        e = None if real in seen else _model_entry(path, name)
+        if e:
+            seen.add(real)
+            found.append(e)
+
+    for hub in dict.fromkeys(hubs):
+        for repo in sorted(glob.glob(os.path.join(hub, "models--*"))):
+            name = os.path.basename(repo)[len("models--"):].replace("--", "/")
+            for snap in sorted(glob.glob(os.path.join(repo, "snapshots", "*"))):
+                add(snap, name)
+    for r in dict.fromkeys(roots):
+        add(r, os.path.basename(r.rstrip("/")))
+        for d in sorted(glob.glob(os.path.join(r, "*"))):
+            add(d, os.path.basename(d))
+            for sub in sorted(glob.glob(os.path.join(d, "*"))):
+                add(sub, os.path.basename(d) + "/" + os.path.basename(sub))
+    return found
+
+
 def collect(data_dir=None):
     home = os.path.expanduser("~")
     return {
         "schema": 1,
+        "local_models": find_local_models(data_dir),
         "hostname": os.environ.get("RDNA_DASH_LABEL") or socket.gethostname(),
         "runtime": {"container": IN_CONTAINER},
         "os": os_info(),

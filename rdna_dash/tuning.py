@@ -140,6 +140,34 @@ def settle_port_check(plan, attach_url=None, own_server=False):
     return plan
 
 
+# Environment that would change what runs, not how vLLM tunes itself.
+UNSAFE_ENV = re.compile(r"^(LD_|PATH$|BASH_ENV$|ENV$|PYTHONPATH$|PYTHONSTARTUP$|IFS$)")
+
+
+def launch_extras(p, checks):
+    """The server flags and environment the user added in Change."""
+    args = []
+    if p.get("kv_offload_gb"):
+        args += ["--kv-offloading-size", str(p["kv_offload_gb"]), "--kv-offloading-backend", "native"]
+    try:
+        args += shlex.split(p.get("extra_args") or "")
+    except ValueError as e:
+        checks.append(check("extra", "warn", "Extra vLLM flags were ignored", "They do not parse: %s." % e))
+    env = {}
+    for line in (p.get("extra_env") or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        k, eq, v = line.partition("=")
+        k = k.strip()
+        if not eq or not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", k) or UNSAFE_ENV.match(k):
+            checks.append(check("extra", "warn", "Ignored the setting %s" % k[:60],
+                                "Use KEY=VALUE, one per line. Loader and shell variables such as LD_PRELOAD are not allowed."))
+            continue
+        env[k] = v.strip()
+    return args, env
+
+
 def gpu_groups(profile):
     """Numeric host GIDs a GPU container needs. Never names: a name like "render" is looked
     up in the image's /etc/group, where it may not exist or may carry another number.
@@ -281,6 +309,10 @@ def default_prefs():
         "p2p_probe": None,       # result of the P2P probe or bandwidth test
         "download_mbps": 0,      # model download speed limit in MB/s, 0 = unlimited
         "ple": "auto",           # auto | bf16 | int4 | int4-disk
+        "model_path": None,      # a checkpoint folder already on this box: serve it, download nothing
+        "kv_offload_gb": None,   # GB of KV cache vLLM may keep in CPU memory
+        "extra_args": None,      # more vllm serve flags, as one line
+        "extra_env": None,       # more environment for the server, KEY=VALUE per line
     }
 
 
@@ -591,7 +623,20 @@ def build_plan(profile, prefs=None, registry=None):
              "hf_cache": os.path.join(root, "hf-cache") if profile.get("runtime", {}).get("container")
              else os.path.expanduser("~/.cache/huggingface")}
     m = r["model"]
-    model_dir = os.path.join(paths["models"], m["dir"])
+    local_model = (p.get("model_path") or "").strip() or None
+    model_dir = local_model or os.path.join(paths["models"], m["dir"])
+    if local_model:
+        settings.append(setting("Model", local_model, "Already on this box, so nothing is downloaded. Flags and layout come from %s: "
+                                                      "pick the recipe that matches this checkpoint." % r["label"]))
+        if not os.path.isdir(local_model):
+            checks.append(check("model_path", "warn", "Can't see %s" % local_model,
+                                "Check the path. A dashboard in a container only sees its data folder and RDNA_DASH_MODEL_DIRS."))
+    extra_args, extra_env = launch_extras(p, checks)
+    if p.get("kv_offload_gb"):
+        settings.append(setting("KV offload", "%s GB" % p["kv_offload_gb"], "Chosen by you. It holds more context in CPU memory, but "
+                                                                            "the wiki warns it can slow decoding down."))
+    if extra_args or extra_env:
+        settings.append(setting("Your additions", " ".join(extra_args + ["%s=%s" % kv for kv in extra_env.items()]), "Added to the launch as you wrote them."))
     ple_dir = os.path.join(paths["models"], r["ple"]["dir"], r["ple"]["subdir"]) if ple else None
     ccfg = r.get("container", {})
     max_len = p.get("max_len") or (ccfg.get("max_len") if path == "container" else None)
@@ -601,10 +646,10 @@ def build_plan(profile, prefs=None, registry=None):
     rocm_home = rocm.get("sdk_root") or (os.path.dirname(os.path.dirname(rocm["hipcc"])) if rocm.get("hipcc") else "/opt/rocm/core-7.14")
     if path == "container":
         served = ccfg.get("served_name", "vllm-rdna")
-        launch = container_launch(reg, profile, paths, r, used, tp, port, host, served, max_len, p2p, hsa, ple, ple_dir, model_dir)
+        launch = container_launch(reg, profile, paths, r, used, tp, port, host, served, max_len, p2p, hsa, ple, ple_dir, model_dir, extra_args, extra_env)
     else:
         served = venv_cfg.get("served_name")
-        launch = venv_launch(paths, venv_cfg, model_dir, port, host, hip, p2p, hsa, ple, ple_dir, max_len, tp, rocm_home)
+        launch = venv_launch(paths, venv_cfg, model_dir, port, host, hip, p2p, hsa, ple, ple_dir, max_len, tp, rocm_home, extra_args, extra_env)
 
     # ---- alternatives -------------------------------------------------------------------------
     other = [x for x in pick["paths"] if x != path]
@@ -621,6 +666,7 @@ def build_plan(profile, prefs=None, registry=None):
     levels = [c["level"] for c in checks]
     return {
         "prefs": p,
+        "local_models": profile.get("local_models", []),
         "verdict": "blocked" if "fail" in levels else ("attention" if "warn" in levels else "ready"),
         "summary": {"gpus": "%d x %s" % (n, card.get("name", "GPU")) if n else "no GPU", "using": len(used),
                     "gfx": gfx, "vram_gb": vram, "ram_gb": ram, "cpu": cpu.get("model", ""),
@@ -638,7 +684,7 @@ def build_plan(profile, prefs=None, registry=None):
         "settings": settings,
         "alternatives": alts,
         "launch": launch,
-        "steps": build_steps(reg, path, r, multi, paths, model_dir, ple, rocm_home, launch, checks, cont),
+        "steps": build_steps(reg, path, r, multi, paths, model_dir, ple, rocm_home, launch, checks, cont, local_model),
     }
 
 
@@ -646,7 +692,7 @@ def build_plan(profile, prefs=None, registry=None):
 # Launch commands
 
 
-def container_spec(reg, paths, r, used, tp, port, host, served, max_len, p2p, hsa, ple, ple_dir, model_dir, groups=None):
+def container_spec(reg, paths, r, used, tp, port, host, served, max_len, p2p, hsa, ple, ple_dir, model_dir, groups=None, extra_args=(), extra_env=None):
     env = {"HIP_VISIBLE_DEVICES": ",".join(str(g["index"]) for g in used)}
     if hsa:
         env["HSA_OVERRIDE_GFX_VERSION"] = hsa
@@ -672,6 +718,8 @@ def container_spec(reg, paths, r, used, tp, port, host, served, max_len, p2p, hs
     cmd += ccfg.get("args", [])
     if max_len:
         cmd += ["--max-model-len", str(max_len)]
+    cmd += list(extra_args)
+    env.update(extra_env or {})
     groups = groups or gpu_groups({})
     publish = ("%d:8000" % port) if host == "0.0.0.0" else ("127.0.0.1:%d:8000" % port)
     return {"image": reg["image"], "env": env, "volumes": vols, "command": cmd, "publish": publish, "groups": groups}
@@ -724,12 +772,12 @@ def _run_argv(engine, spec, rootless_podman):
     return args + [spec["image"]] + spec["command"]
 
 
-def container_launch(reg, profile, paths, r, used, tp, port, host, served, max_len, p2p, hsa, ple, ple_dir, model_dir):
+def container_launch(reg, profile, paths, r, used, tp, port, host, served, max_len, p2p, hsa, ple, ple_dir, model_dir, extra_args=(), extra_env=None):
     cont = profile.get("container", {})
     engine = cont.get("engine") or "docker"
     rootless = engine == "podman" and cont.get("rootless")
     spec = container_spec(reg, paths, r, used, tp, port, host, served, max_len, p2p, hsa, ple, ple_dir, model_dir,
-                          gpu_groups(profile))
+                          gpu_groups(profile), extra_args, extra_env)
     compose = cont.get("compose") or None
     run_argv = _run_argv(engine, spec, rootless)
     return {
@@ -762,8 +810,9 @@ def _pairs(args):
     return out
 
 
-def venv_launch(paths, vcfg, model_dir, port, host, hip, p2p, hsa, ple, ple_dir, max_len, tp, rocm_home):
+def venv_launch(paths, vcfg, model_dir, port, host, hip, p2p, hsa, ple, ple_dir, max_len, tp, rocm_home, extra_args=(), extra_env=None):
     env = {"MODEL": model_dir, "VENV": paths["venv"], "ROCM_SDK_ROOT": rocm_home}
+    env.update(extra_env or {})
     if hsa:
         env["HSA_OVERRIDE_GFX_VERSION"] = hsa
     keys = {"PORT": port, "HOST": host, "HIP_VISIBLE_DEVICES": hip}
@@ -776,6 +825,8 @@ def venv_launch(paths, vcfg, model_dir, port, host, hip, p2p, hsa, ple, ple_dir,
         keys["PLE_QUANT_DIR"] = ple_dir
     if max_len:
         keys["MAXLEN"] = max_len
+    if extra_args:
+        keys["EXTRA_ARGS"] = " ".join(extra_args)  # serve_rdna.sh appends these to vllm serve
     env_s = " ".join("%s=%s" % (k, q(v)) for k, v in env.items())
     keys_s = " ".join("%s=%s" % (k, q(v)) for k, v in keys.items())
     base = "cd %s && %s %%sbash tools/rdna/serve_rdna.sh RECIPE=%s %s" % (q(paths["src"]), env_s, vcfg["recipe"], keys_s)
@@ -787,7 +838,7 @@ def venv_launch(paths, vcfg, model_dir, port, host, hip, p2p, hsa, ple, ple_dir,
 # Install steps
 
 
-def build_steps(reg, path, r, multi, paths, model_dir, ple, rocm_home, launch, checks, cont):
+def build_steps(reg, path, r, multi, paths, model_dir, ple, rocm_home, launch, checks, cont, local_model=None):
     """Ordered install steps. kind: check (from the profile), run (the dashboard runs it),
     serve (start the server), smoke (first request). Steps that need sudo are never run by
     the dashboard: they show up as fixes on the host check."""
@@ -808,7 +859,7 @@ def build_steps(reg, path, r, multi, paths, model_dir, ple, rocm_home, launch, c
         steps.append({"id": "pull", "kind": "run", "title": "Pull the vllm-rdna image",
                       "summary": "Hub bake of rdna_extras: ROCm 7.14, torch 2.12, Triton 3.7.1.",
                       "script": "%s pull %s" % (eng, reg["image"])})
-        steps.append(download_step(m, r, ple, paths, model_dir))
+        steps += download_steps(m, r, ple, paths, model_dir, local_model)
         steps.append({"id": "compose", "kind": "write", "title": "Write the vLLM compose file",
                       "summary": "Saves the tuned service to %s so you can also run it by hand with compose." % paths["compose"]})
     else:
@@ -852,7 +903,7 @@ def build_steps(reg, path, r, multi, paths, model_dir, ple, rocm_home, launch, c
                           "summary": "Asks PyTorch which card pairs reach each other directly. The plan turns P2P on only "
                                      "if every pair can.",
                           "script": "%s/bin/python - <<'PY'\n%sPY" % (q(venv), P2P_PROBE)})
-        steps.append(download_step(m, r, ple, paths, model_dir))
+        steps += download_steps(m, r, ple, paths, model_dir, local_model)
         steps.append({"id": "dryrun", "kind": "run", "title": "Dry-run the tuned launch",
                       "summary": "serve_rdna.sh PRINT=1 prints the exact env and argv without starting anything.",
                       "script": launch["dry_run"]})
@@ -862,6 +913,19 @@ def build_steps(reg, path, r, multi, paths, model_dir, ple, rocm_home, launch, c
     steps.append({"id": "smoke", "kind": "smoke", "title": "First request",
                   "summary": "Health check, model list, and one chat completion with timing."})
     return steps
+
+
+def download_steps(m, r, ple, paths, model_dir, local_model):
+    """A model already on the box downloads nothing, except a PLE table the recipe still needs."""
+    if not local_model:
+        return [download_step(m, r, ple, paths, model_dir)]
+    if not ple:
+        return []
+    dl = '"${RDNA_PY:-python3}" -m rdna_dash.download'
+    return [{"id": "model", "kind": "run", "title": "Download the PLE table", "download": True,
+             "summary": "Your model stays where it is. This recipe still needs its PLE table from %s." % r["ple"]["repo"],
+             "script": "%s %s %s --include %s --limit-file %s" % (dl, q(r["ple"]["repo"]), q(os.path.join(paths["models"], r["ple"]["dir"])),
+                                                                  q(r["ple"]["subdir"] + "/*"), q(paths["download_limit"]))}]
 
 
 def download_step(m, r, ple, paths, model_dir):

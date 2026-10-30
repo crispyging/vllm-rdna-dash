@@ -124,6 +124,22 @@ def check(cid, level, title, detail, fix=None, link=None):
     return {"id": cid, "level": level, "title": title, "detail": detail, "fix": fix or [], "link": link}
 
 
+def settle_port_check(plan, attach_url=None, own_server=False):
+    """The busy-port warning is only about a server the dashboard neither runs nor watches."""
+    for c in list(plan["checks"]):
+        if c["id"] != "port":
+            continue
+        if own_server:
+            plan["checks"].remove(c)
+        elif attach_url:
+            c.pop("attach", None)
+            c.update(level="info", title="Watching the server at %s" % attach_url,
+                     detail="The dashboard reads this server and never starts or stops it.")
+    if plan["verdict"] == "attention" and not any(c["level"] == "warn" for c in plan["checks"]):
+        plan["verdict"] = "ready"
+    return plan
+
+
 def gpu_groups(profile):
     """Numeric host GIDs a GPU container needs. Never names: a name like "render" is looked
     up in the image's /etc/group, where it may not exist or may carry another number.
@@ -546,8 +562,10 @@ def build_plan(profile, prefs=None, registry=None):
     port = int(p.get("port") or (8000 if path == "container" else venv_cfg.get("port") or 8000))
     busy = [s for s in profile.get("servers", []) if s["port"] == port]
     if busy:
-        checks.append(check("port", "warn", "Port %d is already serving (%s)" % (port, ", ".join(m for m in busy[0]["models"] if m) or "unknown"),
-                            "Attach the dashboard to that server, or pick another port for a new one."))
+        c = check("port", "warn", "Port %d is already serving (%s)" % (port, ", ".join(m for m in busy[0]["models"] if m) or "unknown"),
+                  "Watch that server from this dashboard, or pick another port to start a new one.")
+        c["attach"] = "http://127.0.0.1:%d/v1" % port
+        checks.append(c)
     lan = p.get("lan")
     if lan is None:
         lan = bool(profile.get("runtime", {}).get("container"))

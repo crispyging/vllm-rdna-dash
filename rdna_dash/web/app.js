@@ -205,6 +205,7 @@ const actions = {
   async stop() { if (!confirm("Stop the model server?")) return; await api.post("/api/server/stop"); toast("Stopped"); await refresh(); },
   async restart() { await api.post("/api/server/restart"); toast("Restarting"); await refresh(); },
   async attach() { const u = $("#attach-url").value.trim(); await api.post("/api/attach", { url: u }); toast(u ? "Watching " + u : "Detached"); await refresh(); },
+  async attachTo(url) { await api.post("/api/attach", { url }); toast("Watching " + url); await refresh(); },
   async detach() { await api.post("/api/attach", { url: "" }); await refresh(); },
   async smoke() { const r = await api.post("/api/smoke"); toast(r.ok ? "It answered" : "Failed: " + r.error); await refresh(); },
   async bench(suite) { await api.post("/api/bench/start", { suite: $('input[name="suite"]:checked').value, thinking_off: !$("#bench-think").checked }); await loadBench(); },
@@ -315,7 +316,8 @@ function glossKey(k) {
 function checkRow(c) {
   return `<div class="check"><span>${pill(c.level, { ok: "OK", info: "Tip", rec: "Recommended", warn: "Check", fail: "Needs you" }[c.level])}</span>
     <div class="t">${esc(c.title)}</div><div class="d">${esc(c.detail)}${c.link ? ` <a href="${esc(c.link)}" target="_blank" rel="noopener">Read more</a>` : ""}</div>
-    ${c.fix && c.fix.length ? `<div class="fix">${cmdBlock(c.fix.join("\n"))}</div>` : ""}</div>`;
+    ${c.fix && c.fix.length ? `<div class="fix">${cmdBlock(c.fix.join("\n"))}</div>` : ""}
+    ${c.attach ? `<div class="fix row"><button class="btn small" data-act="attachTo" data-arg="${esc(c.attach)}">Watch this server</button><button class="ghost small" data-act="toggleChange">Pick another port</button></div>` : ""}</div>`;
 }
 function stepRow(s, isCur) {
   const st = S.steps[s.id] || { status: "todo" };
@@ -423,7 +425,7 @@ function renderDash() {
   };
   const word = { up: "Serving", starting: "Starting", crashed: "Stopped", stopped: "Off" }[ss.state];
   const dot = { up: "ok", starting: "run", crashed: "fail", stopped: "idle" }[ss.state];
-  const model = (S.smoke && S.smoke.models && S.smoke.models[0]) || S.plan.choice.served_name || S.plan.choice.recipe_label;
+  const model = (S.smoke && S.smoke.models && S.smoke.models[0]) || (ss.attached ? "The server" : S.plan.choice.served_name || S.plan.choice.recipe_label);
   const sub = ss.state === "up" ? `<b>${esc(model)}</b> is answering requests` : ss.state === "starting"
     ? `${esc(ss.phase || "Booting")} · ${ago(ss.started)} so far. First boot compiles kernels; later boots are quick.`
     : ss.state === "crashed" ? "The server exited. Known problems from its log are listed below." : "The model server is not running.";
@@ -431,7 +433,7 @@ function renderDash() {
     ? `<button class="ghost" data-act="restart">Restart</button><button class="ghost" data-act="stop">Stop</button>`
     : `<button class="btn go" data-act="start">Start the server</button>`;
   const ch = S.plan.choice;
-  const layout = [ch.recipe_label, ch.pp > 1 ? `PP=${ch.pp}` : ch.tp > 1 ? `TP=${ch.tp}` : "1 GPU", ch.p2p == null ? null : `P2P ${ch.p2p ? "on" : "off"}`].filter(Boolean).join(" · ");
+  const layout = ss.attached ? "A server you run yourself: this dashboard only watches it" : [ch.recipe_label, ch.pp > 1 ? `PP=${ch.pp}` : ch.tp > 1 ? `TP=${ch.tp}` : "1 GPU", ch.p2p == null ? null : `P2P ${ch.p2p ? "on" : "off"}`].filter(Boolean).join(" · ");
   const hero = $("#d-hero");
   if (!hero.dataset.built) {
     hero.innerHTML = `<div class="panel hero-panel"><div class="hero-l"><div id="dh-state"></div><h1 class="punch${slamOnce("dash")}" id="dh-word"></h1><p class="hero-sub" id="dh-sub"></p>

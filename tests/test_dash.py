@@ -36,6 +36,31 @@ class TuningTest(unittest.TestCase):
         self.assertIn("RECIPE=flashnext-mtp2", p["launch"]["command"])
         self.assertIn("PLE=int4", p["launch"]["command"])
 
+    def test_busy_port_offers_attach_until_attached(self):
+        prof = copy.deepcopy(self.base)
+        port = plan(prof)["choice"]["port"]
+        prof["servers"] = [{"port": port, "models": ["qwen"]}]
+        c = next(c for c in plan(prof)["checks"] if c["id"] == "port")
+        self.assertEqual((c["level"], c["attach"]), ("warn", "http://127.0.0.1:%d/v1" % port))
+        p = tuning.settle_port_check(plan(prof), attach_url=c["attach"])
+        c = next(c for c in p["checks"] if c["id"] == "port")
+        self.assertEqual(c["level"], "info")
+        self.assertNotIn("attach", c)
+        # Our own server on that port is no warning at all.
+        p = tuning.settle_port_check(plan(prof), own_server=True)
+        self.assertNotIn("port", levels(p))
+
+    def test_attach_url_forms(self):
+        self.assertEqual(server.attach_url("8000"), "http://127.0.0.1:8000/v1")
+        self.assertEqual(server.attach_url("http://10.0.0.5:8000/"), "http://10.0.0.5:8000/v1")
+        self.assertEqual(server.attach_url(" http://x:1/v1 "), "http://x:1/v1")
+        with self.assertRaises(ValueError):
+            server.attach_url("ftp://x")
+
+    def test_attach_probe_refuses_a_dead_server(self):
+        with self.assertRaises(ValueError):
+            server.probe_attach("http://127.0.0.1:%d/v1" % demo.free_port())
+
     def test_three_cards_get_pp3_and_low_ram_gets_disk_ple(self):
         prof = copy.deepcopy(self.base)
         prof["gpus"] = prof["gpus"][:3]

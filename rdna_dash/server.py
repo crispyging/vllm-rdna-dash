@@ -49,6 +49,26 @@ def _hash(script):
     return hashlib.sha1((script or "").encode()).hexdigest()[:12]
 
 
+def attach_url(raw):
+    """The /v1 base URL of a server to watch. A bare port means this machine."""
+    raw = raw.strip()
+    if raw.isdigit():
+        raw = "http://127.0.0.1:" + raw
+    if not re.match(r"^https?://[^/]", raw):
+        raise ValueError("Use a port like 8000 or a full URL like http://127.0.0.1:8000/v1")
+    raw = raw.rstrip("/")
+    return raw if raw.endswith("/v1") else raw + "/v1"
+
+
+def probe_attach(url):
+    """Refuse a server that does not answer, so the dashboard never watches nothing."""
+    try:
+        with urllib.request.urlopen(url + "/models", timeout=5) as r:
+            json.loads(r.read().decode())
+    except Exception as e:
+        raise ValueError("No vLLM server answered at %s: %s" % (url, e))
+
+
 class App(object):
     def __init__(self, demo=False, bind="127.0.0.1"):
         self.demo = demo
@@ -110,6 +130,7 @@ class App(object):
             prefs["p2p_probe"] = st["p2p"]
         self.registry = tuning.load_registry()
         self.plan = tuning.build_plan(self.profile, prefs, self.registry)
+        tuning.settle_port_check(self.plan, self.cfg.get("attach_url"), self.serve.status(self.plan)["process"] == "running")
         if self.demo:
             # Point the plan at the fake server so the dashboard and bench exercise real code paths.
             self.plan["choice"]["port"] = self.fake.port
@@ -220,6 +241,11 @@ class App(object):
         ap = self.autopilot
         try:
             self.refresh_profile()
+            taken = next((c for c in self.plan["checks"] if c["id"] == "port" and c["level"] == "warn"), None)
+            if taken:
+                # Not after a long build and download: the start would only fail on the port at the end.
+                ap.update(status="needs-you", message=taken["title"] + ". Watch that server or pick another port first.")
+                return
             for s in self.plan["steps"]:
                 if ap.get("cancel"):
                     ap.update(status="cancelled", message="Stopped by you.")
@@ -667,12 +693,15 @@ class Handler(BaseHTTPRequestHandler):
             a.write_download_limit()
             return self._send(200, {"ok": True, "mbps": mbps})
         if path == "/api/attach":
-            url = (body.get("url") or "").strip() or None
-            if url and not re.match(r"^https?://", url):
-                raise ValueError("Use a full URL like http://127.0.0.1:8000/v1")
+            url = attach_url(str(body.get("url") or "")) if str(body.get("url") or "").strip() else None
+            if url:
+                probe_attach(url)
             a.cfg["attach_url"] = url
             store.save_config(a.cfg)
-            return self._send(200, {"ok": True})
+            a.rebuild()
+            if a.autopilot["status"] == "needs-you":
+                a.autopilot = {"status": "idle", "step": None, "message": None}
+            return self._send(200, {"ok": True, "url": url})
         if path == "/api/smoke":
             return self._send(200, a.run_smoke())
         if path == "/api/bench/start":
